@@ -1,9 +1,9 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import re
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model_path = "./L1-Qwen-1.5B-Exact"
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model_path = "./models/L1-Qwen-1.5B-Exact"
 def run_inference(model_LCPO, tokenizer, device, prompt, limit):
     print(f"=======================================================\n{prompt}\n=====================================================")
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
@@ -38,14 +38,11 @@ def inject_target(prompt:str, target:int) -> str:
     updated_prompt = re.sub(pattern, replacement, prompt)
     return updated_prompt
 
-
-def run_experiment():
-    pass
 def main():
     model_LCPO = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
-        device_map="auto"
+        device_map="cuda"
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     
