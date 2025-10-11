@@ -130,78 +130,90 @@ def generate_until_eos_batch(model, tokenizer,device,prompts,activation_interval
     return [tokenizer.decode(seq, skip_special_tokens=False) for seq in generated],think_texts, think_token_counts, hidden_records
 
 
-def build_generation_dataset(df, targets, bundle, output_path, hidden_path, batch_size, progress=True):
+def build_generation_dataset(df, targets, bundle, generated_dir, hidden_dir, batch_size, progress=True):
+    os.makedirs(generated_dir, exist_ok=True)
+    os.makedirs(hidden_dir, exist_ok=True)
+
     model, tokenizer, device = bundle.model, bundle.tokenizer, bundle.device
+    batch_id = 1
 
-    write_mode = "w" if not os.path.exists(output_path) else "a"
-    f_main = open(output_path, write_mode, newline="", encoding="utf-8")
-    f_hidden = open(hidden_path, write_mode, newline="", encoding="utf-8")
+    # Each question expands into 10 prompts (1 per target)
+    expanded = []
+    for qid, row in df.iterrows():
+        problem, solution = str(row["problem"]), str(row["solution"])
+        for tgt in targets:
+            expanded.append({
+                "question_id": qid,
+                "problem": problem,
+                "solution": solution,
+                "target_think_tokens": int(tgt),
+            })
+    expanded_df = pd.DataFrame(expanded)
 
-    first_write_main = write_mode == "w"
-    first_write_hidden = write_mode == "w"
+    for b in tqdm(range(0, len(expanded_df), batch_size), desc="Global batches", disable=not progress):
+        batch = expanded_df.iloc[b : b + batch_size]
+        batch_prompts = [build_prompt(p, t) for p, t in zip(batch["problem"], batch["target_think_tokens"])]
+        batch_targets = batch["target_think_tokens"].tolist()
+        batch_qids = batch["question_id"].tolist()
+        batch_solutions = batch["solution"].tolist()
 
-    try:
-        for qid, row in tqdm(df.iterrows(), total=len(df), desc="Questions", disable=not progress):
-            problem, solution = str(row["problem"]), str(row["solution"])
-            all_prompts = [build_prompt(problem, tgt) for tgt in targets]
-            all_targets = list(targets)
+        t0 = time.perf_counter()
+        full_texts, think_texts, think_counts, hidden_records = generate_until_eos_batch(
+            model, tokenizer, device, batch_prompts, activation_interval=50
+        )
+        t1 = time.perf_counter()
 
-            for b in range(0, len(all_prompts), batch_size):
-                batch_prompts = all_prompts[b:b + batch_size]
-                batch_targets = all_targets[b:b + batch_size]
+        gen_records = []
+        for qid, tgt, prompt, full_text, think_text, think_tokens, sol in zip(
+            batch_qids, batch_targets, batch_prompts, full_texts, think_texts, think_counts, batch_solutions
+        ):
+            is_ok = evaluate_answer(sol, full_text)
+            gen_records.append({
+                "question_id": qid,
+                "prompt": prompt,
+                "solution_col": sol,
+                "generated_think_text": think_text,
+                "generated_text": full_text,
+                "target_think_tokens": int(tgt),
+                "generated_think_tokens": int(think_tokens),
+                "latency_sec": float(t1 - t0),
+                "is_correct": bool(is_ok),
+            })
 
-                t0 = time.perf_counter()
-                full_texts, think_texts, think_counts, hidden_records = generate_until_eos_batch(model, tokenizer, device, batch_prompts, 50)
-                t1 = time.perf_counter()
+        gen_df = pd.DataFrame(gen_records)
+        gen_path = os.path.join(generated_dir, f"generated_batch{batch_id}.csv")
+        gen_df.to_csv(gen_path, index=False)
 
-                records = []
-                for prompt, tgt, full_text, think_text, think_tokens in zip(batch_prompts, batch_targets, full_texts,think_texts, think_counts):
-                    is_ok = evaluate_answer(solution, full_text)
-                    records.append({
-                        "question_id": qid,
-                        "prompt": prompt,
-                        "solution_col": solution,
-                        "generated_think_text": think_text,
-                        "generated_text": full_text,
-                        "target_think_tokens": int(tgt),
-                        "generated_think_tokens": int(think_tokens),
-                        "latency_sec": float(t1 - t0),
-                        "is_correct": bool(is_ok),
-                    })
+        # === Save hidden info + states ===
+        if hidden_records:
+            meta, states = [], []
+            for rec in hidden_records:
+                idx = rec["sample_idx"]
+                meta.append({
+                    "question_id": batch_qids[idx],
+                    "sample_idx": idx,
+                    "token_step": rec["token_step"],
+                    "target_think_tokens": batch_targets[idx],
+                    "is_correct": evaluate_answer(batch_solutions[idx], full_texts[idx]),
+                })
+                states.append(np.array(rec["hidden_state"], dtype=np.float16))
 
-                pd.DataFrame(records).to_csv(f_main, header=first_write_main, index=False)
-                first_write_main = False
-                f_main.flush()
+            meta_df = pd.DataFrame(meta)
+            meta_path = os.path.join(hidden_dir, f"hidden_info_batch{batch_id}.csv")
+            arr_path = os.path.join(hidden_dir, f"hidden_numpyarr_batch{batch_id}.npy")
 
-                if hidden_records:
-                    hidden_records_aug = []
-                    for rec in hidden_records:
-                        # Map hidden sample to current question and target run
-                        sample_idx = rec.get("sample_idx", 0)
-                        tgt = batch_targets[sample_idx] if sample_idx < len(batch_targets) else None
-                        is_ok = evaluate_answer(solution, full_texts[sample_idx]) if sample_idx < len(full_text) else False   
-                        hidden_records_aug.append({
-                            "question_id": qid,
-                            "target_think_tokens": int(tgt),
-                            "token_step": int(rec["token_step"]),
-                            "is_correct": bool(is_ok),
-                            "hidden_state": rec["hidden_state"],
-                        })
+            meta_df.to_csv(meta_path, index=False)
+            np.save(arr_path, np.stack(states, axis=0))
 
-                    pd.DataFrame(hidden_records_aug).to_csv(f_hidden, header=first_write_hidden, index=False)
-                    first_write_hidden = False
-                    f_hidden.flush()
+        batch_id += 1
 
-    finally:
-        f_main.close()
-        f_hidden.close()
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--data", required=True)
     p.add_argument("--model-path", required=True)
-    p.add_argument("--output", required=True)
-    p.add_argument("--outputhidden",required=True)
+    p.add_argument("--generated-dir", required=True)
+    p.add_argument("--hidden-dir",required=True)
     return p.parse_args()
 
 def main():
@@ -209,7 +221,7 @@ def main():
     df = pd.read_parquet(args.data)
     targets = np.linspace(start=100, stop=2500, num=10, endpoint=True, dtype=int)
     bundle = load_model_bundle(args.model_path)
-    build_generation_dataset(df, targets, bundle, args.output, args.outputhidden, batch_size=64)
+    build_generation_dataset(df, targets, bundle, args.generated_dir, args.hidden_dir, batch_size=2)
     
 if __name__ == "__main__":
     main()
