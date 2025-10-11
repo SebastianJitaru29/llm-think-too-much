@@ -221,7 +221,7 @@ def main():
     df = pd.read_parquet(args.data)
     targets = np.linspace(start=100, stop=2500, num=10, endpoint=True, dtype=int)
     bundle = load_model_bundle(args.model_path)
-    build_generation_dataset(df, targets, bundle, args.generated_dir, args.hidden_dir, batch_size=2)
+    build_generation_dataset(df, targets, bundle, args.generated_dir, args.hidden_dir, batch_size=64)
     
 if __name__ == "__main__":
     main()

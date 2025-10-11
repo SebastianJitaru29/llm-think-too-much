@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --mem=64GB
-#SBATCH --time=02:00:00
+#SBATCH --time=24:00:00
 #SBATCH --job-name=nlp_job
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1
