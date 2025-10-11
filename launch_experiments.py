@@ -90,7 +90,8 @@ def generate_until_eos_batch(model, tokenizer,device,prompts,activation_interval
     save_active = torch.ones(batch_size, dtype=torch.bool, device=device)  # saving initially active
     end_think_ids = tokenizer("</think>", add_special_tokens=False).input_ids
 
-    while True:
+    max_new_tokens = 4096
+    for _ in range(max_new_tokens):
         out = model(
             input_ids=generated[:, -1:],
             past_key_values=past,
@@ -123,8 +124,10 @@ def generate_until_eos_batch(model, tokenizer,device,prompts,activation_interval
         if finished.all():
             break
         
+    if not finished.all():
+        print("Warning: stopped by max_new_tokens (no EOS emitted).")
     think_texts, think_token_counts = decode_returns(tokenizer, generated)
-    return think_texts, think_token_counts, hidden_records
+    return [tokenizer.decode(seq, skip_special_tokens=False) for seq in generated],think_texts, think_token_counts, hidden_records
 
 
 def build_generation_dataset(df, targets, bundle, output_path, hidden_path, batch_size, progress=True):
@@ -148,18 +151,18 @@ def build_generation_dataset(df, targets, bundle, output_path, hidden_path, batc
                 batch_targets = all_targets[b:b + batch_size]
 
                 t0 = time.perf_counter()
-                think_texts, think_counts, hidden_records = generate_until_eos_batch(model, tokenizer, device, batch_prompts, 50)
+                full_texts, think_texts, think_counts, hidden_records = generate_until_eos_batch(model, tokenizer, device, batch_prompts, 50)
                 t1 = time.perf_counter()
 
                 records = []
-                for prompt, tgt, think_text, think_tokens in zip(batch_prompts, batch_targets, think_texts, think_counts):
-                    # Evaluate correctness via boxed match
-                    is_ok = evaluate_answer(solution, think_text)
+                for prompt, tgt, full_text, think_text, think_tokens in zip(batch_prompts, batch_targets, full_texts,think_texts, think_counts):
+                    is_ok = evaluate_answer(solution, full_text)
                     records.append({
                         "question_id": qid,
                         "prompt": prompt,
                         "solution_col": solution,
                         "generated_think_text": think_text,
+                        "generated_text": full_text,
                         "target_think_tokens": int(tgt),
                         "generated_think_tokens": int(think_tokens),
                         "latency_sec": float(t1 - t0),
@@ -176,8 +179,7 @@ def build_generation_dataset(df, targets, bundle, output_path, hidden_path, batc
                         # Map hidden sample to current question and target run
                         sample_idx = rec.get("sample_idx", 0)
                         tgt = batch_targets[sample_idx] if sample_idx < len(batch_targets) else None
-                        is_ok = evaluate_answer(solution, think_texts[sample_idx]) if sample_idx < len(think_texts) else False
-                        
+                        is_ok = evaluate_answer(solution, full_texts[sample_idx]) if sample_idx < len(full_text) else False   
                         hidden_records_aug.append({
                             "question_id": qid,
                             "target_think_tokens": int(tgt),
@@ -207,7 +209,7 @@ def main():
     df = pd.read_parquet(args.data)
     targets = np.linspace(start=100, stop=2500, num=10, endpoint=True, dtype=int)
     bundle = load_model_bundle(args.model_path)
-    build_generation_dataset(df, targets, bundle, args.output, args.outputhidden, batch_size=1)
+    build_generation_dataset(df, targets, bundle, args.output, args.outputhidden, batch_size=64)
     
 if __name__ == "__main__":
     main()
