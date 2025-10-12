@@ -2,3 +2,5 @@ models/*
 data/*
 logs/*
 __pycache__
+generated/*
+hidden/*
