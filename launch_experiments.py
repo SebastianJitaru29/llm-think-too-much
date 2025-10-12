@@ -57,15 +57,13 @@ def save_hidden_states_step(hidden_records, hidden_last, generated, token_counte
 
     for i in range(batch_size):
         if not save_active[i]:
-            continue  # already stopped saving after </think>
+            continue  
 
         # Check if </think> appeared in this sample
         gen_ids = generated[i].tolist()
         if len(gen_ids) >= len_end and gen_ids[-len_end:] == end_think_ids:
-            save_active[i] = False  # stop saving from now on
+            save_active[i] = False  
             continue
-
-        # Save hidden states at defined intervals
         if token_counters[i] >= next_save_step[i]:
             hidden_records.append({
                 "sample_idx": int(i),
@@ -184,7 +182,7 @@ def build_generation_dataset(df, targets, bundle, generated_dir, hidden_dir, bat
         gen_path = os.path.join(generated_dir, f"generated_batch{batch_id}.csv")
         gen_df.to_csv(gen_path, index=False)
 
-        # === Save hidden info + states ===
+        #save hidden info + states
         if hidden_records:
             meta, states = [], []
             for rec in hidden_records:
