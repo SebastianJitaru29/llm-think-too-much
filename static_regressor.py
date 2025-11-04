@@ -65,7 +65,7 @@ def get_initial_hidden_states(model, tokenizer, device, problems: list[str]) -> 
     """Get initial hidden states for a batch of problems (before adding 'Think for X tokens')."""
     # Create simple prompts with just the problem and instruction
     simple_prompts = [
-        f"{problem} Let's think step by step inside and output the final answer within boxed{{}}."
+        f"{problem}"
         for problem in problems
     ]
     
@@ -127,9 +127,8 @@ def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_t
 
 def test_inference(
     model_path: str = "./models/L1-Qwen-1.5B-Exact",
-    output_path: str = "./test_inference_results.csv",
-    batch_size: int = 2,
-    num_samples: int = 10
+    output_path: str = "./regressor_test_results.csv",
+    batch_size: int = 2
 ):
     """
     Test inference using the regressor to predict optimal thinking tokens.
@@ -142,7 +141,6 @@ def test_inference(
     """
     print("Loading test questions...")
     test_df = load_questions(train=False)
-    test_df = test_df.head(num_samples).reset_index(drop=True)
     
     print("Loading regressor network...")
     network = Regressor.load_network()
@@ -174,7 +172,7 @@ def test_inference(
         # Step 3: Build full prompts with predicted targets
         full_prompts = [
             build_prompt(problem, target) 
-            for problem, target in zip(problems, predicted_targets)
+            for problem, target in zip(problems, predicted_targets, strict=True)
         ]
         
         # Step 4: Run L1 inference with full prompts
@@ -203,16 +201,12 @@ def test_inference(
     results_df.to_csv(output_path, index=False)
     
     # Print summary statistics
-    print(f"\n{'='*60}")
-    print("Test Inference Results Summary")
-    print(f"{'='*60}")
     print(f"Total samples: {len(results_df)}")
     print(f"Correct answers: {results_df['is_correct'].sum()} ({results_df['is_correct'].mean()*100:.1f}%)")
     print(f"Mean target tokens: {results_df['target_tokens'].mean():.1f}")
     print(f"Mean actual tokens: {results_df['actual_tokens'].mean():.1f}")
     print(f"Mean token difference: {(results_df['actual_tokens'] - results_df['target_tokens']).abs().mean():.1f}")
     print(f"\nResults saved to: {output_path}")
-    print(f"{'='*60}\n")
     
     return results_df
 
