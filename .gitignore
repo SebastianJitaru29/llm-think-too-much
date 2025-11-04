@@ -7,3 +7,5 @@ hidden/*
 
 /regressor/dataset/*
 /regressor/dataset/innit_hidden_states/*
+generated_aime/*
+hidden_aime/*
