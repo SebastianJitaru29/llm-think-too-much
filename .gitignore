@@ -9,3 +9,5 @@ hidden/*
 /regressor/dataset/innit_hidden_states/*
 generated_aime/*
 hidden_aime/*
+generated_math/*
+hidden_math/*
