@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 import argparse, re, time, os
 from dataclasses import dataclass
@@ -21,17 +20,22 @@ def load_model_bundle(model_path: str, torch_dtype: torch.dtype = torch.bfloat16
     return ModelBundle(model=model, tokenizer=tokenizer, device=device)
 
 def build_prompt(problem: str, target_think_tokens: int) -> str:
-    return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens. <think>"
+    return f"{problem} Let's think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens. <think>"
 
 def extract_boxed(s: str):
     m = re.search(r"\\boxed\{([^}]*)\}", s)
     return m.group(1).strip() if m else None
 
-def evaluate_answer(expected_answer, generated_answer):
-    exp_val = extract_boxed(expected_answer)
+def evaluate_answer_aime(expected_answer, generated_answer):
+    """
+    Evaluate AIME answer where expected_answer is a plain value (int/string)
+    and generated_answer is the full generated text containing boxed{} format.
+    """
     gen_val = extract_boxed(generated_answer)
-    if exp_val is None or gen_val is None:
+    if gen_val is None:
         return False
+    # Convert expected_answer to string for comparison
+    exp_val = str(expected_answer).strip()
     return is_equiv(gen_val, exp_val)
 
 def extract_think_text(full_text: str):
@@ -128,32 +132,38 @@ def generate_until_eos_batch(model, tokenizer,device,prompts,activation_interval
     return [tokenizer.decode(seq, skip_special_tokens=True) for seq in generated],think_texts, think_token_counts, hidden_records
 
 
-def build_generation_dataset(df, targets, bundle, generated_dir, hidden_dir, batch_size, progress=True):
+def build_generation_dataset_aime(df, targets, bundle, generated_dir, hidden_dir, batch_size, progress=True):
+    """
+    Build generation dataset for AIME data.
+    AIME columns: ID, Year, Problem Number, Question, Answer, Part
+    """
     os.makedirs(generated_dir, exist_ok=True)
     os.makedirs(hidden_dir, exist_ok=True)
 
     model, tokenizer, device = bundle.model, bundle.tokenizer, bundle.device
     batch_id = 1
 
-    # Each question expands into 10 prompts (1 per target)
+    # Each question expands into multiple prompts (1 per target)
     expanded = []
-    for qid, row in df.iterrows():
-        problem, solution = str(row["problem"]), str(row["solution"])
+    for _, row in df.iterrows():
+        question_id = str(row["ID"])
+        question = str(row["Question"])
+        answer = str(row["Answer"])
         for tgt in targets:
             expanded.append({
-                "question_id": qid,
-                "problem": problem,
-                "solution": solution,
+                "question_id": question_id,
+                "question": question,
+                "answer": answer,
                 "target_think_tokens": int(tgt),
             })
     expanded_df = pd.DataFrame(expanded)
 
     for b in tqdm(range(0, len(expanded_df), batch_size), desc="Global batches", disable=not progress):
         batch = expanded_df.iloc[b : b + batch_size]
-        batch_prompts = [build_prompt(p, t) for p, t in zip(batch["problem"], batch["target_think_tokens"])]
+        batch_prompts = [build_prompt(q, t) for q, t in zip(batch["question"], batch["target_think_tokens"])]
         batch_targets = batch["target_think_tokens"].tolist()
         batch_qids = batch["question_id"].tolist()
-        batch_solutions = batch["solution"].tolist()
+        batch_answers = batch["answer"].tolist()
 
         t0 = time.perf_counter()
         full_texts, think_texts, think_counts, hidden_records = generate_until_eos_batch(
@@ -162,14 +172,14 @@ def build_generation_dataset(df, targets, bundle, generated_dir, hidden_dir, bat
         t1 = time.perf_counter()
 
         gen_records = []
-        for qid, tgt, prompt, full_text, think_text, think_tokens, sol in zip(
-            batch_qids, batch_targets, batch_prompts, full_texts, think_texts, think_counts, batch_solutions
+        for qid, tgt, prompt, full_text, think_text, think_tokens, answer in zip(
+            batch_qids, batch_targets, batch_prompts, full_texts, think_texts, think_counts, batch_answers
         ):
-            is_ok = evaluate_answer(sol, full_text)
+            is_ok = evaluate_answer_aime(answer, full_text)
             gen_records.append({
                 "question_id": qid,
                 "prompt": prompt,
-                "solution_col": sol,
+                "expected_answer": answer,
                 "generated_think_text": think_text,
                 "generated_text": full_text,
                 "target_think_tokens": int(tgt),
@@ -192,7 +202,7 @@ def build_generation_dataset(df, targets, bundle, generated_dir, hidden_dir, bat
                     "sample_idx": idx,
                     "token_step": rec["token_step"],
                     "target_think_tokens": batch_targets[idx],
-                    "is_correct": evaluate_answer(batch_solutions[idx], full_texts[idx]),
+                    "is_correct": evaluate_answer_aime(batch_answers[idx], full_texts[idx]),
                 })
                 states.append(np.array(rec["hidden_state"], dtype=np.float16))
 
@@ -208,21 +218,33 @@ def build_generation_dataset(df, targets, bundle, generated_dir, hidden_dir, bat
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--data", required=True)
-    p.add_argument("--model-path", required=True)
-    p.add_argument("--generated-dir", required=True)
-    p.add_argument("--hidden-dir",required=True)
+    p.add_argument("--data", required=True, help="Path to AIME parquet/csv file")
+    p.add_argument("--model-path", required=True, help="Path to model")
+    p.add_argument("--generated-dir", required=True, help="Directory to save generated outputs")
+    p.add_argument("--hidden-dir", required=True, help="Directory to save hidden states")
+    p.add_argument("--batch-size", type=int, default=4, help="Batch size for generation")
     return p.parse_args()
 
 def main():
     args = parse_args()
-    df = pd.read_parquet(args.data)
-    df = df.loc[1888:]  # Start from question 1888
-    df = df[df["level"].isin(["Level 3", "Level 4"])]
-    print(f"Filtered to {len(df)} questions (Level 3 and Level 4 only)")
+    
+    # Load AIME dataset (supports both parquet and csv)
+    if args.data.endswith('.parquet'):
+        df = pd.read_parquet(args.data)
+    elif args.data.endswith('.csv'):
+        df = pd.read_csv(args.data)
+    else:
+        raise ValueError("Data file must be .parquet or .csv")
+    
+    # Define target thinking token counts
     targets = np.linspace(start=100, stop=2500, num=10, endpoint=True, dtype=int)
+    
+    # Load model
     bundle = load_model_bundle(args.model_path)
-    build_generation_dataset(df, targets, bundle, args.generated_dir, args.hidden_dir, batch_size=64)
+    
+    # Build generation dataset
+    build_generation_dataset_aime(df, targets, bundle, args.generated_dir, args.hidden_dir, batch_size=args.batch_size)
     
 if __name__ == "__main__":
     main()
+
