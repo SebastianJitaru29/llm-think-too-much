@@ -43,7 +43,7 @@ def extract_think_text(full_text: str):
     return match.group(1).strip() if match else ""
 
 def decode_returns(tokenizer, generated):
-    decoded = [tokenizer.decode(seq, skip_special_tokens=True) for seq in generated]
+    decoded = [tokenizer.decode(seq, skip_special_tokens=False) for seq in generated]
     think_texts, think_token_counts = [], []
     for text in decoded:
         think_text = extract_think_text(text)
@@ -129,7 +129,7 @@ def generate_until_eos_batch(model, tokenizer,device,prompts,activation_interval
     if not finished.all():
         print("Warning: stopped by max_new_tokens (no EOS emitted).")
     think_texts, think_token_counts = decode_returns(tokenizer, generated)
-    return [tokenizer.decode(seq, skip_special_tokens=True) for seq in generated],think_texts, think_token_counts, hidden_records
+    return [tokenizer.decode(seq, skip_special_tokens=False) for seq in generated],think_texts, think_token_counts, hidden_records
 
 
 def build_generation_dataset_aime(df, targets, bundle, generated_dir, hidden_dir, batch_size, progress=True):

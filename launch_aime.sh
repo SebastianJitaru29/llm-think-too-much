@@ -6,8 +6,8 @@
 #SBATCH --gres=gpu:a100:1
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --output=logs/aime_experiments.out
-#SBATCH --error=logs/aime_experiments.err
+#SBATCH --output=logs/aime_experiments_first.out
+#SBATCH --error=logs/aime_experiments_first.err
 
 echo "Job started on $(hostname) at $(date)"
 module purge
@@ -16,7 +16,7 @@ source ../.venv/bin/activate
 srun python3 launch_aime_experiments.py \
   --data ./data/dataset_aime.parquet \
   --model-path ./models/L1-Qwen-1.5B-Exact \
-  --generated-dir ./generated_aime \
-  --hidden-dir ./hidden_aime \
-  --batch-size 4
+  --generated-dir ./generated_aime_dataset \
+  --hidden-dir ./hidden_aime_dataset\
+  --batch-size 64
 

@@ -39,7 +39,7 @@ def extract_think_text(full_text: str):
     return match.group(1).strip() if match else ""
 
 def decode_returns(tokenizer, generated):
-    decoded = [tokenizer.decode(seq, skip_special_tokens=True) for seq in generated]
+    decoded = [tokenizer.decode(seq, skip_special_tokens=False) for seq in generated]
     think_texts, think_token_counts = [], []
     for text in decoded:
         think_text = extract_think_text(text)
@@ -125,7 +125,7 @@ def generate_until_eos_batch(model, tokenizer,device,prompts,activation_interval
     if not finished.all():
         print("Warning: stopped by max_new_tokens (no EOS emitted).")
     think_texts, think_token_counts = decode_returns(tokenizer, generated)
-    return [tokenizer.decode(seq, skip_special_tokens=True) for seq in generated],think_texts, think_token_counts, hidden_records
+    return [tokenizer.decode(seq, skip_special_tokens=False) for seq in generated],think_texts, think_token_counts, hidden_records
 
 
 def build_generation_dataset(df, targets, bundle, generated_dir, hidden_dir, batch_size, progress=True):
@@ -212,17 +212,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-path", required=True)
     p.add_argument("--generated-dir", required=True)
     p.add_argument("--hidden-dir",required=True)
+    p.add_argument("--batch-size", type=int, default=4, help="Batch size for generation")
+
     return p.parse_args()
 
 def main():
     args = parse_args()
     df = pd.read_parquet(args.data)
-    df = df.loc[1888:]  # Start from question 1888
+    df = df.loc[2285:]  # Start from question 1888
     df = df[df["level"].isin(["Level 3", "Level 4"])]
     print(f"Filtered to {len(df)} questions (Level 3 and Level 4 only)")
     targets = np.linspace(start=100, stop=2500, num=10, endpoint=True, dtype=int)
     bundle = load_model_bundle(args.model_path)
-    build_generation_dataset(df, targets, bundle, args.generated_dir, args.hidden_dir, batch_size=64)
+    build_generation_dataset(df, targets, bundle, args.generated_dir, args.hidden_dir, args.batch_size)
     
 if __name__ == "__main__":
     main()
