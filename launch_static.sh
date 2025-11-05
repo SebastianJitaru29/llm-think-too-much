@@ -10,6 +10,6 @@
 #SBATCH --error=logs/static_regressor.err
 
 module purge
-module load PyTorch-bundle/2.1.2-foss-2023a-CUDA-12.1.1
+module load meson-python/0.18.0-GCCcore-14.2.0
 source ./venv/bin/activate
 srun python static_regressor.py
