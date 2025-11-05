@@ -213,20 +213,22 @@ def test_inference_dynamic(
 
         initial_hidden = get_initial_hidden_states(model, tokenizer, device, problems)
         predicted_targets, targets_p = numpy_wrapper_predict_batch(network, initial_hidden)
-        full_prompts = [build_prompt(p, t) for p, t in zip(problems, predicted_targets, strict=True)]
-        partial_texts = ["" for _ in range(len(problems))]
+        current_prompts = [
+            build_prompt(problem, target) 
+            for problem, target in zip(problems, predicted_targets, strict=True)
+        ]
 
         all_results = []
 
         for step_i in range(max_steps):
-            print(step_i)
-            generated_texts, token_counts, latest_hidden, finished_mask  = generate_partially_with_prompt(
-                model, tokenizer, device, full_prompts, n_tokens=n_tokens
+
+            new_texts, token_counts, latest_hidden, finished_mask  = generate_partially_with_prompt(
+                model, tokenizer, device, current_prompts, n_tokens=n_tokens
             )
 
             # Append new generation to existing text
-            partial_texts = [
-                old + new for old, new in zip(partial_texts, generated_texts, strict=True)
+            current_prompts = [
+                prompt + new for prompt, new in zip(current_prompts, new_texts, strict=True)
             ]
 
             # Evaluate updated hidden and predictions
@@ -234,11 +236,11 @@ def test_inference_dynamic(
 
             # Evaluate correctness only if finished
             for qid, problem, solution, target, actual, gen_text, target_p, finished in zip(
-                question_ids, problems, solutions, predicted_targets, token_counts, partial_texts, targets_p, finished_mask, strict=True
+                question_ids, problems, solutions, predicted_targets, token_counts, current_prompts, targets_p, finished_mask, strict=True
             ):
                 is_correct = evaluate_answer(solution, gen_text) if finished else np.nan
                 gen_text = gen_text if finished else ""
-                 
+
                 row = {
                     "question_id": qid,
                     "step_i": step_i,
@@ -258,9 +260,9 @@ def test_inference_dynamic(
                 break
 
             # Update prompts for next step (if any unfinished)
-            full_prompts = [
-                change_target_tokens(prompt, t)
-                for prompt, t in zip(full_prompts, predicted_targets, strict=True)
+            current_prompts = [
+                change_target_tokens(prompt, t) if not finished else prompt
+                for prompt, t, finished in zip(current_prompts, predicted_targets, finished_mask, strict=True)
             ]
 
         results_df = pd.DataFrame(all_results)
