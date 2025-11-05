@@ -11,3 +11,5 @@ generated_aime/*
 hidden_aime/*
 generated_math/*
 hidden_math/*
+generated_aime_dataset/*
+hidden_aime_dataset/*
