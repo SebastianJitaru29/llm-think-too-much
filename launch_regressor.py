@@ -139,7 +139,8 @@ def generate_partially_with_prompt(
     tokenizer,
     device,
     prompts: list[str],
-    n_tokens: int
+    n_tokens: int,
+    finished: torch.Tensor | None = None
 ):
     """Generate up to n_tokens and return text, token counts, and final hidden states."""
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
@@ -147,7 +148,12 @@ def generate_partially_with_prompt(
     generated = inputs.input_ids.clone()
     input_len = inputs.input_ids.shape[1]
     token_counters = torch.zeros(batch_size, dtype=torch.long, device=device)
-    finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+    
+    if finished is None:
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+    else:
+        finished = finished.to(device=device)
+    
     past = None
 
     for _ in range(n_tokens):
@@ -226,10 +232,12 @@ def test_inference_dynamic(
 
         max_steps = (max_tokens // token_step) + 1
 
+        finished_mask = None
+
         for step_i in range(max_steps): 
 
             new_texts, token_counts, latest_hidden, finished_mask  = generate_partially_with_prompt(
-                model, tokenizer, device, current_prompts, n_tokens=token_step
+                model, tokenizer, device, current_prompts, n_tokens=token_step, finished=finished_mask
             )
 
             # Append new generation to existing text
