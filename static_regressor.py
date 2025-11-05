@@ -40,7 +40,7 @@ def predict_batch(network: Regressor, hidden: jax.Array) -> jax.Array:
 
 def numpy_wrapper_predict_batch(network: Regressor, hidden: torch.Tensor) -> list[int]:
     
-    hidden = jax.device_put(hidden)
+    hidden = jax.device_put(hidden.to(torch.float32))
     bucket_i = predict_batch(network, hidden)
     target_tokens = []
 
@@ -126,8 +126,8 @@ def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_t
     return full_texts, think_token_counts
 
 def test_inference(
-    model_path: str = "./models/L1-Qwen-1.5B-Exact",
-    output_path: str = "./regressor_test_results.csv",
+    model_path: Path = Path(__file__).parent / "models" / "L1-Qwen-1.5B-Exact",
+    output_path: Path = Path(__file__).parent / "regressor_test_results.csv",
     batch_size: int = 2
 ):
     """
