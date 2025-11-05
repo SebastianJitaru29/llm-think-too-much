@@ -212,7 +212,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-path", required=True)
     p.add_argument("--generated-dir", required=True)
     p.add_argument("--hidden-dir",required=True)
-    p.add_argument("--batch-size", type=int, default=4, help="Batch size for generation")
+    p.add_argument("--batch-size", type=int)
 
     return p.parse_args()
 
