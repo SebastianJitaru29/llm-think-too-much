@@ -107,7 +107,7 @@ def generate_until_eos_batch(model, tokenizer,device,prompts,activation_interval
         eos_mask = next_tokens == tokenizer.eos_token_id
         finished |= eos_mask
 
-        token_counters += (~finished).long()
+        token_counters += (~finished).long() #Should have padded if finished
 
         save_hidden_states_step(
             hidden_records=hidden_records,
@@ -123,7 +123,7 @@ def generate_until_eos_batch(model, tokenizer,device,prompts,activation_interval
             break
         
     if not finished.all():
-        print("Warning: stopped by max_new_tokens (no EOS emitted).")
+        print("(no EOS emitted).")
     think_texts, think_token_counts = decode_returns(tokenizer, generated)
     return [tokenizer.decode(seq, skip_special_tokens=False) for seq in generated],think_texts, think_token_counts, hidden_records
 
@@ -219,7 +219,7 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
     df = pd.read_parquet(args.data)
-    df = df.loc[2285:]  # Start from question 1888
+    df = df.loc[2285:]  # Start from question 2285
     df = df[df["level"].isin(["Level 3", "Level 4"])]
     print(f"Filtered to {len(df)} questions (Level 3 and Level 4 only)")
     targets = np.linspace(start=100, stop=2500, num=10, endpoint=True, dtype=int)

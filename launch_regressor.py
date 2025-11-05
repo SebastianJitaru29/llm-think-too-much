@@ -103,6 +103,7 @@ def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_t
         past = out.past_key_values
         
         next_tokens = torch.argmax(logits, dim=-1)
+        next_tokens = torch.where(finished, tokenizer.pad_token_id, next_tokens)
         generated = torch.cat([generated, next_tokens.unsqueeze(-1)], dim=-1)
         
         eos_mask = next_tokens == tokenizer.eos_token_id
@@ -138,12 +139,13 @@ def generate_partially_with_prompt(
     tokenizer,
     device,
     prompts: list[str],
-    n_tokens: int = 128
+    n_tokens: int
 ):
     """Generate up to n_tokens and return text, token counts, and final hidden states."""
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
     batch_size = inputs.input_ids.size(0)
     generated = inputs.input_ids.clone()
+    input_len = inputs.input_ids.shape[1]
     token_counters = torch.zeros(batch_size, dtype=torch.long, device=device)
     finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
     past = None
@@ -160,6 +162,7 @@ def generate_partially_with_prompt(
 
         next_tokens = torch.argmax(logits, dim=-1)
         generated = torch.cat([generated, next_tokens.unsqueeze(-1)], dim=-1)
+        next_tokens = torch.where(finished, tokenizer.pad_token_id, next_tokens)
         eos_mask = next_tokens == tokenizer.eos_token_id
         finished |= eos_mask
         token_counters += (~finished).long()
@@ -167,9 +170,10 @@ def generate_partially_with_prompt(
         if finished.all():
             break
 
-    full_texts = [tokenizer.decode(seq, skip_special_tokens=False) for seq in generated]
+    new_tokens = generated[:, input_len:]
+    new_texts = [tokenizer.decode(seq, skip_special_tokens=False) for seq in new_tokens]
     hidden_states = out.hidden_states[-1][:, -1, :].detach().cpu()  # latest hidden state
-    return full_texts, token_counters.tolist(), hidden_states, finished.cpu().tolist()
+    return new_texts, token_counters.tolist(), hidden_states, finished.cpu().tolist()
 
 
 def change_target_tokens(prompt: str, new_target: int) -> str:
@@ -181,8 +185,8 @@ def test_inference_dynamic(
     output_path: Path,
     model_path: Path = Path(__file__).parent / "models" / "L1-Qwen-1.5B-Exact",
     batch_size: int = 2,
-    n_tokens: int = 100,
-    max_steps: int = 500
+    token_step: int = 100,
+    max_tokens: int = 4_000,
 ):
     print("Loading test questions...")
     test_df = load_questions(train=False)
@@ -211,30 +215,43 @@ def test_inference_dynamic(
 
         initial_hidden = get_initial_hidden_states(model, tokenizer, device, problems)
         predicted_targets, targets_p = numpy_wrapper_predict_batch(network, initial_hidden)
-        full_prompts = [build_prompt(p, t) for p, t in zip(problems, predicted_targets, strict=True)]
-        partial_texts = ["" for _ in range(len(problems))]
+        current_prompts = [
+            build_prompt(problem, target) 
+            for problem, target in zip(problems, predicted_targets, strict=True)
+        ]
+        
+        cum_token_counts = [0] * len(problems)
 
         all_results = []
 
-        for step_i in range(max_steps):
-            print(step_i)
-            generated_texts, token_counts, latest_hidden, finished_mask  = generate_partially_with_prompt(
-                model, tokenizer, device, full_prompts, n_tokens=n_tokens
+        max_steps = (max_tokens // token_step) + 1
+
+        for step_i in range(max_steps): 
+
+            new_texts, token_counts, latest_hidden, finished_mask  = generate_partially_with_prompt(
+                model, tokenizer, device, current_prompts, n_tokens=token_step
             )
 
             # Append new generation to existing text
-            partial_texts = [
-                old + new for old, new in zip(partial_texts, generated_texts, strict=True)
+            current_prompts = [
+                prompt + new for prompt, new in zip(current_prompts, new_texts, strict=True)
             ]
+
+            cum_token_counts = [
+                old + new for old, new in zip(cum_token_counts, token_counts, strict=True)
+            ]
+            
 
             # Evaluate updated hidden and predictions
             predicted_targets, targets_p = numpy_wrapper_predict_batch(network, latest_hidden)
 
             # Evaluate correctness only if finished
             for qid, problem, solution, target, actual, gen_text, target_p, finished in zip(
-                question_ids, problems, solutions, predicted_targets, token_counts, partial_texts, targets_p, finished_mask, strict=True
+                question_ids, problems, solutions, predicted_targets, cum_token_counts, current_prompts, targets_p, finished_mask, strict=True
             ):
                 is_correct = evaluate_answer(solution, gen_text) if finished else np.nan
+                gen_text = gen_text if finished else ""
+
                 row = {
                     "question_id": qid,
                     "step_i": step_i,
@@ -254,9 +271,9 @@ def test_inference_dynamic(
                 break
 
             # Update prompts for next step (if any unfinished)
-            full_prompts = [
-                change_target_tokens(prompt, t)
-                for prompt, t in zip(full_prompts, predicted_targets, strict=True)
+            current_prompts = [
+                change_target_tokens(prompt, t) if not finished else prompt
+                for prompt, t, finished in zip(current_prompts, predicted_targets, finished_mask, strict=True)
             ]
 
         results_df = pd.DataFrame(all_results)
@@ -368,7 +385,7 @@ if __name__ == "__main__":
         test_inference_dynamic(
             out_folder,
             batch_size=args.batch,
-            n_tokens=args.every
+            token_step=args.every
         )
 
     
