@@ -208,9 +208,5 @@ def test_inference(
 
 if __name__ == "__main__":
     # Run test inference
-    results = test_inference(
-        model_path="./models/L1-Qwen-1.5B-Exact",
-        output_path="./test_inference_results.csv",
-        batch_size=2
-    )
+    results = test_inference()
     
