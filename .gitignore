@@ -11,3 +11,4 @@ generated_aime/*
 hidden_aime/*
 generated_math/*
 hidden_math/*
+/static_regressor_results/*
