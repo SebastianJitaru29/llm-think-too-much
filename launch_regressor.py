@@ -152,7 +152,7 @@ def generate_partially_with_prompt(
     if finished is None:
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
     else:
-        finished = finished.to(device=device)
+        finished = torch.tensor(finished, dtype=torch.bool, device=device)
     
     past = None
 
