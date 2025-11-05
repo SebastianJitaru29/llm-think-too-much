@@ -144,6 +144,7 @@ def generate_partially_with_prompt(
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
     batch_size = inputs.input_ids.size(0)
     generated = inputs.input_ids.clone()
+    input_len = inputs.input_ids.shape[1]
     token_counters = torch.zeros(batch_size, dtype=torch.long, device=device)
     finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
     past = None
@@ -167,9 +168,10 @@ def generate_partially_with_prompt(
         if finished.all():
             break
 
-    full_texts = [tokenizer.decode(seq, skip_special_tokens=False) for seq in generated]
+    new_tokens = generated[:, input_len:]
+    new_texts = [tokenizer.decode(seq, skip_special_tokens=False) for seq in new_tokens]
     hidden_states = out.hidden_states[-1][:, -1, :].detach().cpu()  # latest hidden state
-    return full_texts, token_counters.tolist(), hidden_states, finished.cpu().tolist()
+    return new_texts, token_counters.tolist(), hidden_states, finished.cpu().tolist()
 
 
 def change_target_tokens(prompt: str, new_target: int) -> str:
@@ -235,6 +237,8 @@ def test_inference_dynamic(
                 question_ids, problems, solutions, predicted_targets, token_counts, partial_texts, targets_p, finished_mask, strict=True
             ):
                 is_correct = evaluate_answer(solution, gen_text) if finished else np.nan
+                gen_text = gen_text if finished else ""
+                 
                 row = {
                     "question_id": qid,
                     "step_i": step_i,
