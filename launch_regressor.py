@@ -103,6 +103,7 @@ def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_t
         past = out.past_key_values
         
         next_tokens = torch.argmax(logits, dim=-1)
+        next_tokens = torch.where(finished, tokenizer.pad_token_id, next_tokens)
         generated = torch.cat([generated, next_tokens.unsqueeze(-1)], dim=-1)
         
         eos_mask = next_tokens == tokenizer.eos_token_id
@@ -138,7 +139,7 @@ def generate_partially_with_prompt(
     tokenizer,
     device,
     prompts: list[str],
-    n_tokens: int = 128
+    n_tokens: int
 ):
     """Generate up to n_tokens and return text, token counts, and final hidden states."""
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
@@ -161,6 +162,7 @@ def generate_partially_with_prompt(
 
         next_tokens = torch.argmax(logits, dim=-1)
         generated = torch.cat([generated, next_tokens.unsqueeze(-1)], dim=-1)
+        next_tokens = torch.where(finished, tokenizer.pad_token_id, next_tokens)
         eos_mask = next_tokens == tokenizer.eos_token_id
         finished |= eos_mask
         token_counters += (~finished).long()
@@ -224,9 +226,7 @@ def test_inference_dynamic(
 
         max_steps = (max_tokens // token_step) + 1
 
-        for step_i in range(max_steps):
-            
-            print(current_prompts[0])
+        for step_i in range(max_steps): 
 
             new_texts, token_counts, latest_hidden, finished_mask  = generate_partially_with_prompt(
                 model, tokenizer, device, current_prompts, n_tokens=token_step
