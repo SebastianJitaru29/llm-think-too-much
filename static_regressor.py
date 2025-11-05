@@ -40,7 +40,7 @@ def predict_batch(network: Regressor, hidden: jax.Array) -> jax.Array:
 
 def numpy_wrapper_predict_batch(network: Regressor, hidden: torch.Tensor) -> list[int]:
     
-    hidden = jax.device_put(hidden.to("cpu").numpy().astype(np.float32))
+    hidden = jax.device_put(hidden.to(torch.float32).cpu().numpy())
     bucket_i = predict_batch(network, hidden)
     target_tokens = []
 
