@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from tqdm.auto import tqdm
+import shutil
 
 from regressor.architecture import Regressor
 from launch_experiments import (
@@ -24,7 +25,7 @@ def load_jax_and_set_to_cpu() -> Regressor:
     return network
 
 @jax.jit
-def predict_batch(network: Regressor, hidden: jax.Array) -> jax.Array:
+def predict_batch(network: Regressor, hidden: jax.Array) -> tuple[jax.Array, jax.Array]:
     logits = Regressor.forward(hidden, network)
     p = jax.nn.sigmoid(logits)
     bins_correct = p > 0.5
@@ -35,13 +36,13 @@ def predict_batch(network: Regressor, hidden: jax.Array) -> jax.Array:
 
     bucket_i = jax.lax.select(any_correct, min_correct, highest_incorrect)
 
-    return bucket_i
+    return bucket_i, p
 
 
-def numpy_wrapper_predict_batch(network: Regressor, hidden: torch.Tensor) -> list[int]:
+def numpy_wrapper_predict_batch(network: Regressor, hidden: torch.Tensor) -> tuple[list[int], np.ndarray]:
     
     hidden = jax.device_put(hidden.to(torch.float32).cpu().numpy())
-    bucket_i = predict_batch(network, hidden)
+    bucket_i, p = predict_batch(network, hidden)
     target_tokens = []
 
     for bi in bucket_i:
@@ -49,7 +50,9 @@ def numpy_wrapper_predict_batch(network: Regressor, hidden: torch.Tensor) -> lis
     
     assert len(target_tokens) == hidden.shape[0]
 
-    return target_tokens
+    p = np.array(p)
+
+    return target_tokens, p
 
 def load_questions(
     train: bool = True
@@ -57,7 +60,7 @@ def load_questions(
     df = pd.read_parquet(Path(__file__).parent / "data" / "dataset.parquet")
 
     if not train:
-        return df.sample(10)
+        return df.sample(4)
     return df
 
 @torch.inference_mode()
@@ -127,30 +130,25 @@ def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_t
 
 def test_inference(
     model_path: Path = Path(__file__).parent / "models" / "L1-Qwen-1.5B-Exact",
-    output_path: Path = Path(__file__).parent / "regressor_test_results.csv",
+    output_path: Path = Path(__file__).parent / "static_regressor_results",
     batch_size: int = 2
 ):
-    """
-    Test inference using the regressor to predict optimal thinking tokens.
-    
-    Args:
-        model_path: Path to the L1 model
-        output_path: Path to save results CSV
-        batch_size: Batch size for inference
-        num_samples: Number of test samples to use
-    """
     print("Loading test questions...")
     test_df = load_questions(train=False)
     
     print("Loading regressor network...")
     network = Regressor.load_network()
+    bins = network.bins
     
     print(f"Loading L1 model from {model_path}...")
     bundle = load_model_bundle(model_path)
     model, tokenizer, device = bundle.model, bundle.tokenizer, bundle.device
     
-    all_results = []
-    
+    # Folder stuff
+    if output_path.exists():
+        shutil.rmtree(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
     # Process in batches
     num_batches = int(np.ceil(len(test_df) / batch_size))
     
@@ -167,7 +165,7 @@ def test_inference(
         initial_hidden = get_initial_hidden_states(model, tokenizer, device, problems)
         
         # Step 2: Pass to regressor to get predicted target tokens
-        predicted_targets = numpy_wrapper_predict_batch(network, initial_hidden)
+        predicted_targets, targets_p = numpy_wrapper_predict_batch(network, initial_hidden)
         
         # Step 3: Build full prompts with predicted targets
         full_prompts = [
@@ -180,13 +178,14 @@ def test_inference(
             model, tokenizer, device, full_prompts
         )
         
+        all_results = []
         # Step 5: Evaluate and record results
-        for qid, problem, solution, target, actual, gen_text in zip(
-            question_ids, problems, solutions, predicted_targets, actual_token_counts, generated_texts
+        for qid, problem, solution, target, actual, gen_text, target_p in zip(
+            question_ids, problems, solutions, predicted_targets, actual_token_counts, generated_texts, targets_p, strict=True
         ):
             is_correct = evaluate_answer(solution, gen_text)
             
-            all_results.append({
+            row = {
                 "question_id": qid,
                 "problem": problem,
                 "expected_solution": solution,
@@ -194,19 +193,16 @@ def test_inference(
                 "actual_tokens": actual,
                 "is_correct": is_correct,
                 "generated_text": gen_text,
-            })
+            }
+
+            for b, p in zip(bins, target_p, strict=True):
+                row[f"bin_{b}"] = p
+            
+            all_results.append(row)
     
-    # Save results to CSV
-    results_df = pd.DataFrame(all_results)
-    results_df.to_csv(output_path, index=False)
-    
-    # Print summary statistics
-    print(f"Total samples: {len(results_df)}")
-    print(f"Correct answers: {results_df['is_correct'].sum()} ({results_df['is_correct'].mean()*100:.1f}%)")
-    print(f"Mean target tokens: {results_df['target_tokens'].mean():.1f}")
-    print(f"Mean actual tokens: {results_df['actual_tokens'].mean():.1f}")
-    print(f"Mean token difference: {(results_df['actual_tokens'] - results_df['target_tokens']).abs().mean():.1f}")
-    print(f"\nResults saved to: {output_path}")
+        # Save results to CSV
+        results_df = pd.DataFrame(all_results)
+        results_df.to_parquet(output_path / f"batch_{batch_idx}.parquet", index=False)
     
     return results_df
 
