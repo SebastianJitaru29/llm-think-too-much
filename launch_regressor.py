@@ -183,8 +183,8 @@ def test_inference_dynamic(
     output_path: Path,
     model_path: Path = Path(__file__).parent / "models" / "L1-Qwen-1.5B-Exact",
     batch_size: int = 2,
-    n_tokens: int = 100,
-    max_steps: int = 500
+    token_step: int = 100,
+    max_tokens: int = 4_000,
 ):
     print("Loading test questions...")
     test_df = load_questions(train=False)
@@ -217,13 +217,19 @@ def test_inference_dynamic(
             build_prompt(problem, target) 
             for problem, target in zip(problems, predicted_targets, strict=True)
         ]
+        
+        cum_token_counts = [0] * len(problems)
 
         all_results = []
 
+        max_steps = (max_tokens // token_step) + 1
+
         for step_i in range(max_steps):
+            
+            print(current_prompts[0])
 
             new_texts, token_counts, latest_hidden, finished_mask  = generate_partially_with_prompt(
-                model, tokenizer, device, current_prompts, n_tokens=n_tokens
+                model, tokenizer, device, current_prompts, n_tokens=token_step
             )
 
             # Append new generation to existing text
@@ -231,12 +237,17 @@ def test_inference_dynamic(
                 prompt + new for prompt, new in zip(current_prompts, new_texts, strict=True)
             ]
 
+            cum_token_counts = [
+                old + new for old, new in zip(cum_token_counts, token_counts, strict=True)
+            ]
+            
+
             # Evaluate updated hidden and predictions
             predicted_targets, targets_p = numpy_wrapper_predict_batch(network, latest_hidden)
 
             # Evaluate correctness only if finished
             for qid, problem, solution, target, actual, gen_text, target_p, finished in zip(
-                question_ids, problems, solutions, predicted_targets, token_counts, current_prompts, targets_p, finished_mask, strict=True
+                question_ids, problems, solutions, predicted_targets, cum_token_counts, current_prompts, targets_p, finished_mask, strict=True
             ):
                 is_correct = evaluate_answer(solution, gen_text) if finished else np.nan
                 gen_text = gen_text if finished else ""
@@ -374,7 +385,7 @@ if __name__ == "__main__":
         test_inference_dynamic(
             out_folder,
             batch_size=args.batch,
-            n_tokens=args.every
+            token_step=args.every
         )
 
     
