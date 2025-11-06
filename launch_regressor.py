@@ -67,7 +67,7 @@ def numpy_wrapper_predict_batch(network: Regressor, hidden: torch.Tensor) -> tup
 def load_test_questions():
     data_folder = Path(__file__).parent / "data"
 
-    qids = pd.read_parquet(data_folder / "test.parquet", columns=['question_id'])["question_id"]
+    qids = pd.read_parquet(data_folder / "test.parquet", columns=['question_id'])["question_id"].unique()
 
     m = pd.read_parquet(data_folder / "math.parquet", columns=["problem", "solution"])
     m = m.reset_index(names="question_id")
