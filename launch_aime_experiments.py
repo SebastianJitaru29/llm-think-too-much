@@ -22,20 +22,20 @@ def load_model_bundle(model_path: str, torch_dtype: torch.dtype = torch.bfloat16
 def build_prompt(problem: str, target_think_tokens: int) -> str:
     return f"{problem} Let's think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens. <think>"
 
+
 def extract_boxed(s: str):
     m = re.search(r"\\boxed\{([^}]*)\}", s)
     return m.group(1).strip() if m else None
 
-def evaluate_answer_aime(expected_answer, generated_answer):
-    """
-    Evaluate AIME answer where expected_answer is a plain value (int/string)
-    and generated_answer is the full generated text containing boxed{} format.
-    """
+def evaluate_answer(expected_answer, generated_answer):
     gen_val = extract_boxed(generated_answer)
     if gen_val is None:
         return False
-    # Convert expected_answer to string for comparison
-    exp_val = str(expected_answer).strip()
+
+    exp_val = extract_boxed(expected_answer)
+    if exp_val is None:
+        exp_val = str(expected_answer).strip()
+
     return is_equiv(gen_val, exp_val)
 
 def extract_think_text(full_text: str):

@@ -9,15 +9,13 @@ import pandas as pd
 import torch
 from tqdm.auto import tqdm
 import shutil
+from math_equivalence import is_equiv
 
 from regressor.architecture import Regressor
 from launch_experiments import (
     build_prompt,
-    extract_boxed,
-    evaluate_answer,
     extract_think_text,
-    load_model_bundle,
-    ModelBundle
+    load_model_bundle
 )
 
 def load_jax_and_set_to_cpu() -> Regressor:
@@ -40,6 +38,17 @@ def predict_batch(network: Regressor, hidden: jax.Array) -> tuple[jax.Array, jax
     return bucket_i, p
 
 
+def extract_boxed(s: str):
+    m = re.search(r"\\boxed\{([^}]*)\}", s)
+    return m.group(1).strip() if m else None
+
+def evaluate_answer(expected_answer, generated_answer):
+    exp_val = extract_boxed(expected_answer)
+    gen_val = extract_boxed(generated_answer)
+    if exp_val is None or gen_val is None:
+        return False
+    return is_equiv(gen_val, exp_val)
+
 def numpy_wrapper_predict_batch(network: Regressor, hidden: torch.Tensor) -> tuple[list[int], np.ndarray]:
     
     hidden = jax.device_put(hidden.to(torch.float32).cpu().numpy())
@@ -56,7 +65,23 @@ def numpy_wrapper_predict_batch(network: Regressor, hidden: torch.Tensor) -> tup
     return target_tokens, p
 
 def load_test_questions():
-    df = pd.read_parquet(Path(__file__).parent / "data" / "test.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct', 'level'])
+    qids = pd.read_parquet(Path(__file__).parent / "data" / "test.parquet", columns=['question_id'])["question_id"]
+
+    m = pd.read_parquet("../data/math.parquet", columns=["problem", "solution"])
+    m = m.reset_index(names="question_id")
+
+    a = pd.read_parquet("../data/aime.parquet", columns=["ID", "Question", "Answer"])
+    a = a.rename(columns={"ID": "question_id", "Question": "problem", "Answer": "solution"})
+
+    df = pd.concat((m, a), ignore_index=True)
+
+    tqids = set(qids)
+    aqids = set(df["question_id"])
+
+    assert len(tqids - aqids) == 0, "Some question ids are not present in the database"
+
+    df = df[df["question_id"].isin(qids)]
+
     return df
 
 @torch.inference_mode()
@@ -216,7 +241,7 @@ def test_inference_dynamic(
 
         problems = batch_df["problem"].tolist()
         solutions = batch_df["solution"].tolist()
-        question_ids = batch_df.index.tolist()
+        question_ids = batch_df["question_id"].tolist()
 
         initial_hidden = get_initial_hidden_states(model, tokenizer, device, problems)
         predicted_targets, targets_p = numpy_wrapper_predict_batch(network, initial_hidden)
@@ -324,7 +349,7 @@ def test_inference(
         
         problems = batch_df["problem"].tolist()
         solutions = batch_df["solution"].tolist()
-        question_ids = batch_df.index.tolist()
+        question_ids = batch_df["question_id"].tolist()
         
         # Step 1: Get initial hidden states (before "Think for X tokens")
         initial_hidden = get_initial_hidden_states(model, tokenizer, device, problems)
