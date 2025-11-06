@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --mem=64GB
-#SBATCH --time=2:00:00
+#SBATCH --time=8:00:00
 #SBATCH --job-name=static_regressor
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gpus-per-node=1
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=1
 #SBATCH --output=logs/static_regressor.out
@@ -12,4 +12,4 @@
 module purge
 module load meson-python/0.18.0-GCCcore-14.2.0
 source ./venv/bin/activate
-srun python static_regressor.py
+srun python launch_regressor.py --type static --batch 30

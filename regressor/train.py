@@ -10,34 +10,42 @@ from functools import partial
 
 from architecture import Regressor
 
-def load_df() -> pd.DataFrame:
+def load_df(train: bool = True) -> pd.DataFrame:
 
-    dfs = []
-    path =  (Path(".") / "dataset" / "hidden").resolve()
-    for path in path.glob("*.csv"):
-        dfs.append(pd.read_csv(path))
-
-    df = pd.concat(dfs, ignore_index=True)
+    label = "train" if train else "test"
+    path =  Path(__file__).parent.parent / "data" / f"{label}.parquet"
+    df = pd.read_parquet(path, columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct', 'level'])
     
     return df
 
 
 def create_regressor_dataset(h: np.ndarray, h_ids: np.ndarray, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
 
-    actual = df.groupby(["question_id", "target_think_tokens"])["token_step"].max().reset_index()
     q = df.drop_duplicates(["question_id", "target_think_tokens"], keep="first")
-    q = q.drop(columns="token_step")
-    q = pd.merge(q, actual, "left", ["question_id", "target_think_tokens"], validate="1:1")
-    q = q.rename(columns={"token_step": "actual_think_tokens"})
-    q = q.loc[q.index.isin(h_ids)]
+    q = q.rename(columns={"generated_think_tokens": "actual_think_tokens"})
 
     bins = np.sort(q["target_think_tokens"].unique())
 
     correct = q[["is_correct", "target_think_tokens", "question_id"]].copy()
-    correct["is_correct"] = correct["is_correct"].astype(np.bool_)
+ 
+    correct["is_correct"] = (
+        correct["is_correct"]
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .map({"true": True, "false": False})
+    )
+
+
     correct = pd.pivot(correct, index="question_id", columns="target_think_tokens", values="is_correct")
     correct = correct.astype(float).fillna(0)
     correct = correct.sort_index(axis="columns")
+
+    # Align df with the hidden state
+    mask = np.isin(h_ids, correct.index)
+    h = h[mask]
+    h_ids = h_ids[mask]
+    correct = correct.reindex(h_ids, axis="index")
 
     return np.squeeze(h), correct.to_numpy().astype(np.int32), tuple(bins)
 
@@ -45,22 +53,39 @@ def loss_dropout(
     network: Regressor,
     x: jax.Array,
     y: jax.Array,
-    key: jax.Array
+    key: jax.Array,
+    neg_scale: float = 2.5,
 ):
-    yhat = Regressor.forward_dropout(x, network, key)
-    return optax.sigmoid_binary_cross_entropy(yhat, y).mean()
+    yhat_logits = Regressor.forward_dropout(x, network, key)
+    loss = optax.sigmoid_binary_cross_entropy(yhat_logits, y)
+    weights = jnp.where(y, 1.0, neg_scale)
+    return (loss * weights).mean()
 
-def loss_accuracy(
+
+def loss_stats(
     network: Regressor,
     x: jax.Array,
     y: jax.Array,
+    neg_scale: float = 2.5,
 ):
+    
+    label = (y > 0.5)
+
     yhat_logits = Regressor.forward(x, network)
     yhat = jax.nn.sigmoid(yhat_logits)
     labelhat = (yhat > 0.5).astype(jnp.int32)
-    accuracy = (labelhat == y).astype(jnp.float32).mean(axis=1)
+    accuracy = (labelhat == label).astype(jnp.float32).mean(axis=1)
 
-    return optax.sigmoid_binary_cross_entropy(yhat_logits, y).mean(), accuracy.mean()
+    negatives = (~label).sum()
+    tn = ((~label) & (~labelhat)).sum()
+    tnr = tn / negatives
+
+    loss = optax.sigmoid_binary_cross_entropy(yhat_logits, y)
+    weights = jnp.where(y, 1.0, neg_scale)
+    weighted_loss = (loss * weights).mean()
+
+    return weighted_loss, accuracy.mean(), tnr
+
 
 def train_step(
     x: jax.Array,
@@ -83,8 +108,7 @@ def valid_step(
     y: jax.Array,
     network: Regressor,
 ) -> tuple[jax.Array, Regressor, jax.Array]:
-    l, a = loss_accuracy(network, x, y)
-    return l, a
+    return loss_stats(network, x, y)
 
 
 def batch_dataset(x: np.ndarray, y: np.ndarray, batch: int, shuffle: bool = False) -> Generator[tuple[np.ndarray, np.ndarray], None, None]:
@@ -105,19 +129,24 @@ def batch_dataset(x: np.ndarray, y: np.ndarray, batch: int, shuffle: bool = Fals
         yield x[s:e, :], y[s:e, :]
 
 
+def load_hidden_states() -> tuple[np.ndarray, np.ndarray]:
+    
+    h_math = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_math.npy")
+    h_math_ids = np.arange(h_math.shape[0]).astype(str)
 
+    h_aim = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_aime.npy")
+    temp = pd.read_parquet(Path(__file__).parent.parent / "data" / "aime.parquet")
+    h_aim_ids = temp["ID"].to_numpy()
+
+    assert h_aim.shape[0] == temp.shape[0], "Aime mismatch"
+
+    return np.concat((h_math, h_aim), axis=0), np.concat((h_math_ids, h_aim_ids))
+    
+
+    
 def get_dataset(train: bool = True) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
-    df = load_df()
-    h = np.load("./innit_hidden_states/hidden_states.npy").astype(np.float32)
-    h_ids = np.arange(h.shape[0])
-
-    if not train:
-        n = h_ids.shape[0]
-        take_mask = np.zeros(n, dtype=np.bool)
-        take_mask[np.random.choice(n, size=10, replace=False)] = True
-
-        h = h[take_mask]
-        h_ids = h_ids[take_mask]
+    df = load_df(train)
+    h, h_ids = load_hidden_states()
 
     return create_regressor_dataset(h, h_ids, df)
 
@@ -133,7 +162,6 @@ def train(
     batch_size: int = 256,
 ):
     
-
     key = jax.random.key(seed=0)
     kinit, kloop, kvalid, k4, k5, key = jax.random.split(key, 6)
     
@@ -144,7 +172,7 @@ def train(
     x_valid, y_valid = x[valid_idx], y[valid_idx]
 
     
-    layers = (1_536, 256, 256, 256, 10)
+    layers = (1_536, 1024, 512, 256, 10)
 
     network = Regressor(
         arch=Regressor.init_mlp(
@@ -156,7 +184,7 @@ def train(
         dropout=dropout
     )
 
-    optimizer = optax.adamw(1e-3, weight_decay=1e-5)
+    optimizer = optax.adamw(1e-4, weight_decay=1e-4)
     opt_state = optimizer.init(network)
 
     train_step_compiled = jax.jit(partial(train_step, optimizer=optimizer))
@@ -164,6 +192,7 @@ def train(
     tl = []
     vl = []
     va = []
+    vtnr = []
     for _ in tqdm.tqdm(range(epochs)):
 
         bl = []
@@ -180,25 +209,38 @@ def train(
         
         bl = []
         ba = []
+        btnr = []
         for x_batch, y_batch in batch_dataset(x_valid, y_valid, batch=batch_size):
 
             x_batch = jax.device_put(x_batch)
             y_batch = jax.device_put(y_batch)
 
-            l, a = valid_step(x_batch, y_batch, network)
+            l, a, tnr = valid_step(x_batch, y_batch, network)
 
             ba.append(a.mean().item())
             bl.append(l.mean().item())
+            btnr.append(tnr.mean().item())
 
         va.append(np.mean(ba))
         vl.append(np.mean(bl))
+        vtnr.append(np.mean(btnr))
     
-    return network, tl, vl, va
+    return network, tl, vl, va, vtnr
 
 
-def calc_baseline_accuracy(y: np.ndarray) -> float:
+
+def calc_baseline_stats(y: np.ndarray) -> tuple[float, float]:
     c = np.unique_counts(y).counts
-    return c.max() / c.sum()
+    ba = c.max() / c.sum()
+    
+    negatives = (y == 0).sum()
+    negatives_p = negatives / y.size
+    
+    negatives_p = (y == 0).mean()
+    tnr = negatives_p  # expected TNR under random prediction using data
+    
+    return ba, tnr
+     
 
 if __name__ == "__main__":
     from matplotlib import pyplot as plt
@@ -206,27 +248,20 @@ if __name__ == "__main__":
     matplotlib.use("Qt5Agg")
 
     x, y, bins = get_dataset()
-    network, tl, vl, va = train(x, y, bins=bins, epochs=100, batch_size=512, dropout=0.2)
+    network, tl, vl, va, vtnr = train(x, y, bins=bins, epochs=150, batch_size=512, dropout=0.20)
 
     Regressor.save_network(network)
 
-    basline_acc = calc_baseline_accuracy(y)
+    basline_acc, baseline_tnr = calc_baseline_stats(y)
 
-    fig, ax1 = plt.subplots(figsize=(10, 5))
-    ax2 = ax1.twinx()
+    fig, ax = plt.subplots(figsize=(10, 5))
 
-    l1, = ax2.plot(tl, label="train loss", color="tab:blue")
-    l2, = ax2.plot(vl, label="valid loss", color="tab:orange")
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Loss")
+    ax.plot(va, label="validation accuracy", color="tab:blue")
+    ax.axhline(basline_acc, color="tab:blue", linestyle="dashed", label="basline acccuracy")
 
-    l3, = ax1.plot(va, label="valid acc", color="tab:green", linestyle="dashed")
-    l4 = ax1.axhline(basline_acc, color="black", linestyle="dashed", label="basline acc")
-    ax1.set_ylabel("Accuracy")
-
-    lines = [l1, l2, l3, l4]
-    labels = [line.get_label() for line in lines]
-    ax1.legend(lines, labels, loc="center right")
+    ax.axhline(baseline_tnr, color="tab:orange", linestyle="dashed", label="basline TNR")
+    ax.plot(vtnr, color="tab:orange", label="validation TNR")
+    ax.legend()
 
     plt.show()
 

@@ -55,13 +55,8 @@ def numpy_wrapper_predict_batch(network: Regressor, hidden: torch.Tensor) -> tup
 
     return target_tokens, p
 
-def load_questions(
-    train: bool = True
-):
-    df = pd.read_parquet(Path(__file__).parent / "data" / "dataset.parquet")
-
-    if not train:
-        return df.sample(4)
+def load_test_questions():
+    df = pd.read_parquet(Path(__file__).parent / "data" / "test.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct', 'level'])
     return df
 
 @torch.inference_mode()
@@ -80,7 +75,7 @@ def get_initial_hidden_states(model, tokenizer, device, problems: list[str]) -> 
     return hidden_states.cpu()
 
 @torch.inference_mode()
-def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_tokens: int = 4096):
+def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_tokens: int = 8000):
     """Generate text for a batch of prompts and return full text and token counts."""
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
     batch_size = inputs.input_ids.size(0)
@@ -128,7 +123,7 @@ def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_t
             think_token_counts.append(0)
         think_texts.append(think_text)
     
-    return full_texts, think_token_counts
+    return full_texts, think_token_counts, finished.cpu().tolist()
 
 
 import re
@@ -192,10 +187,14 @@ def test_inference_dynamic(
     model_path: Path = Path(__file__).parent / "models" / "L1-Qwen-1.5B-Exact",
     batch_size: int = 2,
     token_step: int = 100,
-    max_tokens: int = 4_000,
+    max_tokens: int = 8_000,
+    n_samples: int = -1
 ):
     print("Loading test questions...")
-    test_df = load_questions(train=False)
+    test_df = load_test_questions()
+
+    if n_samples > 0:
+        test_df.sample(n_samples)
 
     print("Loading regressor network...")
     network = Regressor.load_network()
@@ -293,10 +292,14 @@ def test_inference_dynamic(
 def test_inference(
     output_path: Path,
     model_path: Path = Path(__file__).parent / "models" / "L1-Qwen-1.5B-Exact",
-    batch_size: int = 2
+    batch_size: int = 2,
+    n_samples: int = -1
 ):
     print("Loading test questions...")
-    test_df = load_questions(train=False)
+    test_df = load_test_questions()
+
+    if n_samples > 0:
+        test_df.sample(n_samples)
     
     print("Loading regressor network...")
     network = Regressor.load_network()
@@ -336,16 +339,16 @@ def test_inference(
         ]
         
         # Step 4: Run L1 inference with full prompts
-        generated_texts, actual_token_counts = generate_with_prompt(
+        generated_texts, actual_token_counts, finished_mask = generate_with_prompt(
             model, tokenizer, device, full_prompts
         )
         
         all_results = []
         # Step 5: Evaluate and record results
-        for qid, problem, solution, target, actual, gen_text, target_p in zip(
-            question_ids, problems, solutions, predicted_targets, actual_token_counts, generated_texts, targets_p, strict=True
+        for qid, problem, solution, target, actual, gen_text, target_p, finished in zip(
+            question_ids, problems, solutions, predicted_targets, actual_token_counts, generated_texts, targets_p, finished_mask, strict=True
         ):
-            is_correct = evaluate_answer(solution, gen_text)
+            is_correct = evaluate_answer(solution, gen_text) if finished else np.nan
             
             row = {
                 "question_id": qid,
@@ -373,6 +376,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--type", required=True, type=str,  choices=["static", "dynamic"])
     p.add_argument("--batch", type=int, default=2)
     p.add_argument("--every", type=int, default=50)
+    p.add_argument("--samples", type=int, default=-1)
 
     return p.parse_args()
 
@@ -381,19 +385,20 @@ if __name__ == "__main__":
 
     args = parse_args()
     
-
     if args.type == "static":
         out_folder = Path(__file__).parent / "static_regressor_results"
         test_inference(
             out_folder,
-            batch_size=args.batch
+            batch_size=args.batch,
+            n_samples = args.samples
         )
     elif args.type == "dynamic":
         out_folder = Path(__file__).parent / "dynamic_regressor_results"
         test_inference_dynamic(
             out_folder,
             batch_size=args.batch,
-            token_step=args.every
+            token_step=args.every,
+            n_samples = args.samples
         )
 
     
