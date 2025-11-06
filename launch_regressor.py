@@ -97,9 +97,9 @@ def get_initial_hidden_states(model, tokenizer, device, problems: list[str]) -> 
     ]
     
     inputs = tokenizer(simple_prompts, return_tensors="pt", padding=True, truncation=True).to(device)
-    outputs = model(**inputs)
+    outputs = model(**inputs, output_hidden_states=True)
     # Get last hidden state of the last layer for the last token
-    hidden_states = outputs.last_hidden_state[:, -1, :]  # [batch, hidden_dim]
+    hidden_states = outputs.hidden_states[-1][:, -1, :]  # [batch, hidden_dim]
     return hidden_states.cpu()
 
 @torch.inference_mode()
@@ -179,11 +179,12 @@ def generate_partially_with_prompt(
     
     past = None
 
-    for _ in range(n_tokens):
+    for i in range(n_tokens):
         out = model(
             input_ids=generated[:, -1:] if past is not None else generated,
             past_key_values=past,
-            use_cache=True
+            use_cache=True,
+            output_hidden_states=((i + 1) == n_tokens)
         )
         logits = out.logits[:, -1, :]
         past = out.past_key_values
@@ -200,7 +201,7 @@ def generate_partially_with_prompt(
 
     new_tokens = generated[:, input_len:]
     new_texts = [tokenizer.decode(seq, skip_special_tokens=False) for seq in new_tokens]
-    hidden_states = out.last_hidden_state[:, -1, :].detach().cpu()  # latest hidden state
+    hidden_states = out.hidden_states[-1][:, -1, :].detach().cpu()  # latest hidden state
     return new_texts, token_counters.tolist(), hidden_states, finished.cpu().tolist()
 
 
