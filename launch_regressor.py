@@ -222,7 +222,7 @@ def test_inference_dynamic(
     test_df = load_test_questions()
 
     if n_samples > 0:
-        test_df.sample(n_samples)
+        test_df = test_df.sample(n_samples)
 
     print("Loading regressor network...")
     network = Regressor.load_network()
@@ -327,7 +327,7 @@ def test_inference(
     test_df = load_test_questions()
 
     if n_samples > 0:
-        test_df.sample(n_samples)
+        test_df = test_df.sample(n_samples)
     
     print("Loading regressor network...")
     network = Regressor.load_network()
