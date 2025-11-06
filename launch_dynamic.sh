@@ -12,4 +12,4 @@
 module purge
 module load meson-python/0.18.0-GCCcore-14.2.0
 source .venv/bin/activate
-srun python launch_regressor.py --type dynamic --batch 20
+srun python launch_regressor.py --type dynamic --batch 10

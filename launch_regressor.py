@@ -97,13 +97,13 @@ def get_initial_hidden_states(model, tokenizer, device, problems: list[str]) -> 
     ]
     
     inputs = tokenizer(simple_prompts, return_tensors="pt", padding=True, truncation=True).to(device)
-    outputs = model(**inputs, output_hidden_states=True)
+    outputs = model(**inputs)
     # Get last hidden state of the last layer for the last token
-    hidden_states = outputs.hidden_states[-1][:, -1, :]  # [batch, hidden_dim]
+    hidden_states = outputs.last_hidden_state[:, -1, :]  # [batch, hidden_dim]
     return hidden_states.cpu()
 
 @torch.inference_mode()
-def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_tokens: int = 8000):
+def generate_with_prompt(model, tokenizer, device, prompts: list[str], max_new_tokens: int = 4000):
     """Generate text for a batch of prompts and return full text and token counts."""
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
     batch_size = inputs.input_ids.size(0)
@@ -183,8 +183,7 @@ def generate_partially_with_prompt(
         out = model(
             input_ids=generated[:, -1:] if past is not None else generated,
             past_key_values=past,
-            use_cache=True,
-            output_hidden_states=True
+            use_cache=True
         )
         logits = out.logits[:, -1, :]
         past = out.past_key_values
@@ -201,7 +200,7 @@ def generate_partially_with_prompt(
 
     new_tokens = generated[:, input_len:]
     new_texts = [tokenizer.decode(seq, skip_special_tokens=False) for seq in new_tokens]
-    hidden_states = out.hidden_states[-1][:, -1, :].detach().cpu()  # latest hidden state
+    hidden_states = out.last_hidden_state[:, -1, :].detach().cpu()  # latest hidden state
     return new_texts, token_counters.tolist(), hidden_states, finished.cpu().tolist()
 
 
@@ -215,7 +214,7 @@ def test_inference_dynamic(
     model_path: Path = Path(__file__).parent / "models" / "L1-Qwen-1.5B-Exact",
     batch_size: int = 2,
     token_step: int = 100,
-    max_tokens: int = 8_000,
+    max_tokens: int = 4_000,
     n_samples: int = -1
 ):
     print("Loading test questions...")
