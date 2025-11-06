@@ -71,6 +71,7 @@ def load_test_questions():
 
     m = pd.read_parquet(data_folder / "math.parquet", columns=["problem", "solution"])
     m = m.reset_index(names="question_id")
+    m["question_id"] = m["question_id"].astype("string")
 
     a = pd.read_parquet(data_folder / "aime.parquet", columns=["ID", "Question", "Answer"])
     a = a.rename(columns={"ID": "question_id", "Question": "problem", "Answer": "solution"})
