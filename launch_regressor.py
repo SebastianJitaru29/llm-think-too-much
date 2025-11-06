@@ -184,7 +184,7 @@ def generate_partially_with_prompt(
             input_ids=generated[:, -1:] if past is not None else generated,
             past_key_values=past,
             use_cache=True,
-            output_hidden_states=((i + 1) == n_tokens)
+            output_hidden_states=True
         )
         logits = out.logits[:, -1, :]
         past = out.past_key_values
