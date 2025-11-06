@@ -18,7 +18,7 @@ def load_batches(folder: Path) -> pd.DataFrame:
 def dynamic_to_comparison(df: pd.DataFrame) -> pd.DataFrame:
     
     df = df.sort_values(["question_id", "step_i"])
-    ignore_cols = ["step_i", "problem", "expected_solution"] + df.columns[df.columns.str.contains("bin")].tolist()
+    ignore_cols = ["step_i", "problem"] + df.columns[df.columns.str.contains("bin")].tolist()
 
     out = []
 
@@ -45,7 +45,7 @@ def dynamic_to_comparison(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def static_to_comparison(df: pd.DataFrame) -> pd.DataFrame:
-    ignore_cols = ["problem", "expected_solution"] + df.columns[df.columns.str.contains("bin")].tolist()
+    ignore_cols = ["problem"] + df.columns[df.columns.str.contains("bin")].tolist()
     out = df.drop(columns=ignore_cols)
     return out
 
@@ -65,5 +65,10 @@ def create_comparison_dataset():
     
     df.to_parquet(data / "regressor_comparison.parquet", index=False)
 
+
+
 if __name__ == "__main__":
-    create_comparison_dataset()
+    # create_comparison_dataset()
+
+    df = load_batches(static_folder)
+    df.to_parquet("./static_temp.parquet", index=False)
