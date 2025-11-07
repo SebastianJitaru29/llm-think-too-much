@@ -263,5 +263,7 @@ if __name__ == "__main__":
     ax.plot(vtnr, color="tab:orange", label="validation TNR")
     ax.legend()
 
+    ax.set_xlabel("Epochs", fontsize=12)
+
     plt.show()
 

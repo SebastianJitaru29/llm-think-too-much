@@ -137,7 +137,7 @@ def produce_curves(
     fit_line_degree: int  = 2
 ):
     
-    colors = ["tab:blue", "tab:orange", "tab:green"]
+    colors = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple"]
 
     
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -180,16 +180,27 @@ def produce_curves(
     plt.show()
         
 
+def load_non_regressor_data() -> pd.DataFrame:
+    df = pd.read_csv(Path(__file__).parent / "data" / "results.csv", header=None)
+    df.columns = ["question_id", "level", "actual_tokens", "is_correct", "method"]
+
+    df["level"] = df["level"].str.replace("Level", "").str.replace("aimee", "6").str.strip()
+    df["level"] = pd.to_numeric(df["level"], errors="raise")
+
+    df = df.sort_values(["method", "level"])
+    
+    return df
+
 
 if __name__ == "__main__":
     df = create_comparison_dataset()
     df = add_levels_and_solution(df)
     fix_aime_correct(df)
+
+    other = load_non_regressor_data()
+    df = pd.concat((df, other), ignore_index=True)
     produce_curves(
         df,
         scatter_points="numbers",
         fit_line_degree=2
     )
-
-    # df = load_batches(static_folder)
-    # df.to_parquet("./static_temp.parquet", index=False)

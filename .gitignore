@@ -1,5 +1,6 @@
 models/*
-data/test.parquet
+/data/*
+!/data/test.parquet
 logs/*
 __pycache__
 generated/*
