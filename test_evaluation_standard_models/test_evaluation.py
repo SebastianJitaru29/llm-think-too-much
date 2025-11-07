@@ -118,9 +118,9 @@ def evaluate_model(model_path, test_data_folder, output_folder, lora_path ="", e
     model.eval()
     evaluate_model_on_test_data(model, tokenizer, test_data, results_folder, batch_size = 1)
 
-#evaluate_model(ORIGINAL_MODEL_PATH, TEST_DATA_FOLDER, "dpo", MODEL_FINETUNED_PATH, EPOCH)
+evaluate_model(ORIGINAL_MODEL_PATH, TEST_DATA_FOLDER, "dpo", MODEL_FINETUNED_PATH, EPOCH)
 evaluate_model(THINK_PRUNE, TEST_DATA_FOLDER, "thinkprune")
-#evaluate_model(ORIGINAL_MODEL_PATH, TEST_DATA_FOLDER, "base")
+evaluate_model(ORIGINAL_MODEL_PATH, TEST_DATA_FOLDER, "base")
 
 
 
