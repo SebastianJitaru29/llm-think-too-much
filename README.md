@@ -1,12 +1,41 @@
 # CoT Optimization via Adaptive Token Budgets
 
-Chain-of-Thought optimization using a learned regressor to predict optimal reasoning token budgets for mathematical problem solving.
+Optimizing Chain-of-Thought reasoning by learning to predict the minimum token budget required for correct problem solving, reducing computational cost while maintaining accuracy.
 
 ## Overview
 
-This project trains a neural regressor to predict the minimum token budget needed for an LLM to correctly solve math problems. Two inference modes are supported:
-- **Static**: One-shot prediction of optimal token budget
-- **Dynamic**: Adaptive prediction that updates during generation
+Large language models benefit from extended reasoning (Chain-of-Thought), but longer reasoning increases latency and cost. This project explores and compares two approaches to optimize the trade-off between reasoning length and computational efficiency.
+
+**Key Insight:** Different problems require different amounts of reasoning. Simple problems may need only 100 tokens, while complex ones might require 2000+. The challenge is learning when to allocate more or less compute.
+
+### Two Optimization Strategies
+
+**1. Neural Regressor Approach**
+- Trains a lightweight MLP (1.5M parameters) to predict optimal token budgets from problem representations
+- Keeps the base LLM frozen and uses an external predictor
+- Supports two inference modes:
+  - **Static**: One-shot prediction before generation
+  - **Dynamic**: Adaptive re-prediction every 50 tokens during generation
+- **Advantages**: Modular, lightweight, can swap base models without retraining
+
+**2. Direct Preference Optimization (DPO)**
+- Fine-tunes the base LLM using preference pairs (short correct vs long incorrect solutions)
+- Teaches the model to inherently generate efficient reasoning
+- Uses LoRA adapters for parameter-efficient fine-tuning
+- **Advantages**: No external predictor needed, model learns efficiency directly
+
+### Methodology
+
+1. **Data Generation**: Generate solutions across 10 token budgets (100-2500) for thousands of math problems
+2. **Feature Extraction**: Extract hidden states and track correctness at each budget level
+3. **Training**:
+   - Regressor: Train MLP on initial hidden states → budget predictions
+   - DPO: Fine-tune LLM on preference pairs (min-token correct > max-token incorrect)
+4. **Evaluation**: Compare both approaches on:
+   - Token efficiency (average tokens used)
+   - Accuracy preservation
+   - Training cost and inference overhead
+   - Generalization across problem difficulty levels
 
 ## Setup
 
@@ -91,16 +120,25 @@ python launch_regressor.py --type dynamic --batch 4 --every 50
 
 Results saved to `static_regressor_results/` or `dynamic_regressor_results/`.
 
-### DPO Fine-Tuning
+### DPO Fine-Tuning (Comparison Baseline)
 
-Train with Direct Preference Optimization using min-token correct vs max-token incorrect pairs:
+Train an alternative approach using Direct Preference Optimization. This method fine-tunes the LLM to inherently generate shorter, more efficient reasoning:
 
 ```bash
 cd fine_tuning_dpo
 python fine_tuning.py
 ```
 
-Requires `train.parquet` with generated solutions. Outputs LoRA adapters to `./qwen-1.5B-dpo-lora/`.
+**How it works:**
+- Creates preference pairs: chosen = minimum-token correct solution, rejected = maximum-token incorrect/inefficient solution
+- Uses LoRA (Low-Rank Adaptation) to efficiently fine-tune the model
+- Trains for 20 epochs with batch size 8 (via gradient accumulation)
+- Cleans generated text (removes duplicate answers, special token artifacts)
+- Filters out Chinese responses and empty generations
+
+Requires `train.parquet` with generated solutions from `launch_experiments.py`. Outputs LoRA adapters to `./qwen-1.5B-dpo-lora/`.
+
+This serves as a baseline to compare against the regressor approach for token efficiency optimization.
 
 ## Project Structure
 
