@@ -197,8 +197,13 @@ if __name__ == "__main__":
     df = add_levels_and_solution(df)
     fix_aime_correct(df)
 
+    # df.to_parquet(Path(__file__).parent / "data" / "results_regressor.parquet", index=False)
+
     other = load_non_regressor_data()
     df = pd.concat((df, other), ignore_index=True)
+
+    df["is_correct"] = df["is_correct"].fillna(False)
+
     produce_curves(
         df,
         scatter_points="numbers",

@@ -1,15 +1,19 @@
 # Core ML frameworks
-torch>=2.0.0
-transformers>=4.35.0
-jax>=0.4.0
-jaxlib>=0.4.0
-flax>=0.7.0
-optax>=0.1.7
+--index-url https://download.pytorch.org/whl/cu128
+torch
+--index-url https://pypi.org/simple
+jax==0.8.0
+flax==0.12.0
+transformers==4.57.1
+optax==0.2.6
 
 # Data processing
+numpy==2.3.4
 pandas>=2.0.0
-numpy>=1.24.0
 datasets>=2.14.0
+pyarrow==22.0.0
+scipy==1.16.3
+matplotlib==3.10.7
 
 # Training & fine-tuning
 peft>=0.5.0

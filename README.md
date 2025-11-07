@@ -41,7 +41,7 @@ Large language models benefit from extended reasoning (Chain-of-Thought), but lo
 
 ### 1. Install Dependencies
 
-Create and activate a virtual environment, then install requirements:
+Create and activate a virtual environment, then install requirements. We added torch with cuda-12.8 enabled into the requirements, if your system requires a different version, please change it in the requirements.txt:
 
 ```bash
 python -m venv .venv
@@ -71,17 +71,6 @@ Downloads:
 
 ## Usage
 
-### Train Regressor
-
-Train the token predictor on generated hidden states:
-
-```bash
-cd regressor
-python train.py
-```
-
-Trains a 4-layer MLP (1536→256→256→256→10) with dropout to predict correctness across 10 token budgets.
-
 ### Generate Training Data
 
 **For MATH dataset:**
@@ -106,6 +95,17 @@ python launch_aime_experiments.py \
 
 Generates solutions across 10 token budgets (100-2500) and extracts hidden states at 50-token intervals.
 
+### Train Regressor
+
+Train the token predictor on generated hidden states:
+
+```bash
+cd regressor
+python train.py
+```
+
+Trains a 4-layer MLP (1536→256→256→256→10) with dropout to predict correctness across 10 token budgets.
+
 ### Run Experiments
 
 **Static Regressor (single prediction):**
@@ -120,7 +120,7 @@ python launch_regressor.py --type dynamic --batch 4 --every 50
 
 Results saved to `static_regressor_results/` or `dynamic_regressor_results/`.
 
-### DPO Fine-Tuning (Comparison Baseline)
+### DPO Fine-Tuning
 
 Train an alternative approach using Direct Preference Optimization. This method fine-tunes the LLM to inherently generate shorter, more efficient reasoning:
 
@@ -156,11 +156,4 @@ This serves as a baseline to compare against the regressor approach for token ef
 └── download_models.sh     # Model download script
 ```
 
-## Key Features
-
-- **Multi-budget generation**: Tests 10 token budgets per problem (100-2500 tokens)
-- **Hidden state extraction**: Captures model representations at regular intervals
-- **Binary classification**: Learns which budgets produce correct answers
-- **Adaptive inference**: Dynamic mode updates predictions during generation
-- **DPO optimization**: Preference learning from token-efficiency pairs
 
