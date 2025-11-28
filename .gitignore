@@ -16,3 +16,4 @@ hidden_math/*
 generated_aime_dataset/*
 hidden_aime_dataset/*
 /dynamic_regressor_results/*
+.lmenv/

@@ -1,44 +1,20 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse, re, time, os
-from dataclasses import dataclass
-import numpy as np, pandas as pd, torch
-from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import numpy as np
+import pandas as pd 
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
 from math_equivalence import is_equiv
 
-
-# ----------------------------------------------------------------------
-# Utilities
-# ----------------------------------------------------------------------
-
-@dataclass
-class ModelBundle:
-    model: AutoModelForCausalLM
-    tokenizer: AutoTokenizer
-    device: torch.device
-
-
-def load_model_bundle(model_path: str, torch_dtype: torch.dtype = torch.bfloat16) -> ModelBundle:
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    device = torch.device("cuda")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch_dtype,
-        device_map=device,
-    )
-    model.eval()
-    return ModelBundle(model, tokenizer, device)
-
-
+# --- Helper Functions ---
 def build_prompt(problem: str, target_think_tokens: int) -> str:
-    return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens."
-
+    return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens. <think>"
 
 def extract_boxed(s: str):
+    if not s: return None
     m = re.search(r"\\boxed\{([^}]*)\}", s)
     return m.group(1).strip() if m else None
-
 
 def evaluate_answer(expected_answer, generated_answer):
     exp_val = extract_boxed(expected_answer)
@@ -47,40 +23,26 @@ def evaluate_answer(expected_answer, generated_answer):
         return False
     return is_equiv(gen_val, exp_val)
 
-
 def extract_think_text(full_text: str):
     match = re.search(r"<think>(.*?)</think>", full_text, flags=re.DOTALL)
     return match.group(1).strip() if match else ""
 
+# --- Main ---
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data", required=True)
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--generated-dir", required=True)
+    parser.add_argument("--save-every", type=int, default=500, help="Save a CSV every N prompts")
+    args = parser.parse_args()
 
-# ----------------------------------------------------------------------
-# New batched generation (HF handles all decoding)
-# ----------------------------------------------------------------------
+    # 1. Load Data
+    print(f"Loading data from {args.data}...")
+    df = pd.read_parquet(args.data)
+    targets = np.linspace(start=100, stop=2500, num=10, endpoint=True, dtype=int)
 
-@torch.inference_mode()
-def generate_batch_hf(model, tokenizer, device, prompts, max_new_tokens=6000):
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-    )
-    decoded = tokenizer.batch_decode(outputs, skip_special_tokens=False)
-    return decoded
-
-
-# ----------------------------------------------------------------------
-# Dataset building
-# ----------------------------------------------------------------------
-
-def build_generation_dataset(df, targets, bundle, generated_dir, batch_size, progress=True):
-    os.makedirs(generated_dir, exist_ok=True)
-
-    model, tokenizer, device = bundle.model, bundle.tokenizer, bundle.device
-    batch_id = 1
-
-    # expand rows
+    # 2. Expand Data
+    print("Expanding dataset...")
     expanded = []
     for qid, row in df.iterrows():
         for tgt in targets:
@@ -91,72 +53,92 @@ def build_generation_dataset(df, targets, bundle, generated_dir, batch_size, pro
                 "target_think_tokens": int(tgt),
             })
     expanded_df = pd.DataFrame(expanded)
+    
+    # 3. Setup Resources
+    os.makedirs(args.generated_dir, exist_ok=True)
+    
+    # Load tokenizer for counting (CPU)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    
+    # Load vLLM (GPU)
+    print(f"Loading vLLM model: {args.model_path}")
+    llm = LLM(
+        model=args.model_path,
+        dtype="bfloat16",
+        trust_remote_code=True,
+        tensor_parallel_size=1, 
+        max_model_len=32768,    
+    )
 
-    for b in tqdm(range(0, len(expanded_df), batch_size), desc="Global batches", disable=not progress):
-        batch = expanded_df.iloc[b: b + batch_size]
+    sampling_params = SamplingParams(max_tokens=4096, temperature=0)
 
-        batch_prompts = [
-            build_prompt(p, t)
-            for p, t in zip(batch["problem"], batch["target_think_tokens"])
+    # 4. Process in Chunks (So we save progress)
+    total_rows = len(expanded_df)
+    chunk_size = args.save_every
+    
+    print(f"Processing {total_rows} prompts in chunks of {chunk_size}...")
+
+    for start_idx in range(0, total_rows, chunk_size):
+        end_idx = min(start_idx + chunk_size, total_rows)
+        batch_id = (start_idx // chunk_size) + 1
+        
+        # Slice the dataframe
+        chunk_df = expanded_df.iloc[start_idx:end_idx]
+        
+        # Build prompts for this chunk
+        chunk_prompts = [
+            build_prompt(row["problem"], row["target_think_tokens"]) 
+            for _, row in chunk_df.iterrows()
         ]
 
+        print(f"Generating Chunk {batch_id} ({start_idx} to {end_idx})...")
         t0 = time.perf_counter()
-        full_texts = generate_batch_hf(model, tokenizer, device, batch_prompts)
+        
+        # vLLM handles the internal batching for this chunk
+        outputs = llm.generate(chunk_prompts, sampling_params)
+        
         t1 = time.perf_counter()
 
-        records = []
-        for (qid, sol, tgt, prompt, full_text) in zip(
-            batch["question_id"],
-            batch["solution"],
-            batch["target_think_tokens"],
-            batch_prompts,
-            full_texts,
-        ):
-            think_text = extract_think_text(full_text)
-            think_token_count = (
-                tokenizer(think_text, return_tensors="pt").input_ids.shape[1]
-                if think_text else 0
-            )
+        # Process Results for this chunk
+        generated_texts = []
+        think_texts = []
+        
+        for i, output in enumerate(outputs):
+            prompt_text = chunk_prompts[i]
+            generated_suffix = output.outputs[0].text
+            full_text = prompt_text + generated_suffix
+            generated_texts.append(full_text)
+            think_texts.append(extract_think_text(full_text))
 
-            is_ok = evaluate_answer(sol, full_text)
+        # Vectorized Token Counting
+        think_encodings = tokenizer(think_texts, add_special_tokens=False)["input_ids"]
+        think_lengths = [len(ids) for ids in think_encodings]
+
+        # Build Records
+        records = []
+        for i in range(len(chunk_df)):
+            row = chunk_df.iloc[i]
+            full_text = generated_texts[i]
+            is_ok = evaluate_answer(row["solution"], full_text)
 
             records.append({
-                "question_id": qid,
-                "prompt": prompt,
-                "solution_col": sol,
-                "generated_think_text": think_text,
+                "question_id": row["question_id"],
+                "prompt": chunk_prompts[i],
+                "solution_col": row["solution"],
+                "generated_think_text": think_texts[i],
                 "generated_text": full_text,
-                "target_think_tokens": int(tgt),
-                "generated_think_tokens": int(think_token_count),
-                "latency_sec": float(t1 - t0),
+                "target_think_tokens": row["target_think_tokens"],
+                "generated_think_tokens": think_lengths[i],
+                "latency_sec": (t1 - t0) / len(chunk_prompts),
                 "is_correct": bool(is_ok),
             })
 
-        gen_df = pd.DataFrame(records)
-        gen_df.to_csv(os.path.join(generated_dir, f"generated_batch{batch_id}.csv"), index=False)
-        batch_id += 1
+        # SAVE IMMEDIATELY
+        out_path = os.path.join(args.generated_dir, f"generated_chunk_{batch_id}.csv")
+        pd.DataFrame(records).to_csv(out_path, index=False)
+        print(f"Saved {out_path}")
 
-
-# ----------------------------------------------------------------------
-# Main
-# ----------------------------------------------------------------------
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument("--data", required=True)
-    p.add_argument("--model-path", required=True)
-    p.add_argument("--generated-dir", required=True)
-    p.add_argument("--batch-size", type=int, required=True)
-    return p.parse_args()
-
-
-def main():
-    args = parse_args()
-    df = pd.read_parquet(args.data)
-    targets = np.linspace(start=100, stop=5500, num=20, endpoint=True, dtype=int)
-    bundle = load_model_bundle(args.model_path)
-    build_generation_dataset(df, targets, bundle, args.generated_dir, args.batch_size)
-
+    print("All chunks processed.")
 
 if __name__ == "__main__":
     main()
