@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-from __future__ import annotations
 import argparse, re, time, os
 import numpy as np
 import pandas as pd 
@@ -66,7 +64,7 @@ def main():
         max_model_len=32768,    
     )
 
-    sampling_params = SamplingParams(max_tokens=4096, temperature=0)
+    sampling_params = SamplingParams(max_tokens=4096, temperature=0, skip_special_tokens=False)
 
     prompts = [
         build_prompt(row["problem"], row["target_think_tokens"]) 
