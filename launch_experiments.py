@@ -34,7 +34,7 @@ def main():
     print(f"Loading data from {args.data}...")
     df = pd.read_parquet(args.data)
     targets = np.linspace(start=100, stop=2500, num=10, endpoint=True, dtype=int)
-
+#    df = df.sample(n=10, random_state=42).reset_index(drop=True)
     expanded = []
     for qid, row in df.iterrows():
         for tgt in targets:
@@ -58,7 +58,7 @@ def main():
     print(f"Loading vLLM model: {args.model_path}")
     llm = LLM(
         model=args.model_path,
-        dtype="bfloat16",
+        dtype="bfloat16", #On V100, use float16
         trust_remote_code=True,
         tensor_parallel_size=1, 
         max_model_len=32768,    
