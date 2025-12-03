@@ -29,12 +29,13 @@ def main():
     parser.add_argument("--data", required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--generated-dir", required=True)
+    parser.add_argument("--file-name", default="aime_results_long")
     args = parser.parse_args()
 
     print(f"Loading data from {args.data}...")
     df = pd.read_parquet(args.data)
-    targets = np.linspace(start=100, stop=2500, num=10, endpoint=True, dtype=int)
-#    df = df.sample(n=10, random_state=42).reset_index(drop=True)
+    targets = np.linspace(start=100, stop=5000, num=20, endpoint=True, dtype=int)
+    #df = df.sample(n=10, random_state=42).reset_index(drop=True)
     expanded = []
     for qid, row in df.iterrows():
         for tgt in targets:
@@ -64,7 +65,7 @@ def main():
         max_model_len=32768,    
     )
 
-    sampling_params = SamplingParams(max_tokens=4096, temperature=0, skip_special_tokens=False)
+    sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
 
     prompts = [
         build_prompt(row["problem"], row["target_think_tokens"]) 
@@ -114,7 +115,7 @@ def main():
     final_df = final_df.sort_values(by="__original_index", ascending=True)
     final_df = final_df.drop(columns=["__original_index"])
 
-    out_path = os.path.join(args.generated_dir, "results_full.parquet")
+    out_path = os.path.join(args.generated_dir, f"{args.file_name}.parquet")
     final_df.to_parquet(out_path, index=False)
     print(f"Saved {len(final_df)} records to {out_path}")
 
