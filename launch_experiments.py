@@ -6,11 +6,10 @@ import numpy as np, pandas as pd, torch
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from math_equivalence import is_equiv
+from transformers import StoppingCriteria, StoppingCriteriaList
+import re
 
 
-# ----------------------------------------------------------------------
-# Utilities
-# ----------------------------------------------------------------------
 
 @dataclass
 class ModelBundle:
@@ -53,21 +52,73 @@ def extract_think_text(full_text: str):
     return match.group(1).strip() if match else ""
 
 
-# ----------------------------------------------------------------------
-# New batched generation (HF handles all decoding)
-# ----------------------------------------------------------------------
 
+
+# ------------------------------------------------------------
+# Regex stopping criterion (batch size = 1)
+# ------------------------------------------------------------
+class RegexStoppingCriteria(StoppingCriteria):
+    def __init__(self, tokenizer, pattern: str):
+        self.tokenizer = tokenizer
+        self.regex = re.compile(pattern)
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs):
+        # Assumes batch size = 1
+        seq = input_ids[0]
+        text = self.tokenizer.decode(seq, skip_special_tokens=False)
+
+        # Stop if regex is detected
+        return bool(self.regex.search(text))
+
+
+# ------------------------------------------------------------
+# Helper: truncate text at first \boxed{...}
+# ------------------------------------------------------------
+def truncate_after_boxed(text: str):
+    m = re.search(r"\\boxed\{[^}]*\}", text)
+    if m:
+        return text[:m.end()]
+    return text
+
+
+# ------------------------------------------------------------
+# Batched generation via HF (but stopping only checks first sample)
+# ------------------------------------------------------------
 @torch.inference_mode()
 def generate_batch_hf(model, tokenizer, device, prompts, max_new_tokens=6000):
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
+
+    # enforce batch size = 1 for reliable regex stopping
+    if len(prompts) != 1:
+        raise ValueError("RegexStoppingCriteria only works when len(prompts) == 1")
+
+    # regex for \boxed{something}
+    stop_regex = r"\\boxed\{[^}]*\}"
+
+    stopping = StoppingCriteriaList([
+        RegexStoppingCriteria(tokenizer, stop_regex)
+    ])
+
+    inputs = tokenizer(
+        prompts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True
+    ).to(device)
+
     outputs = model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
         pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
+        stopping_criteria=stopping
     )
+
     decoded = tokenizer.batch_decode(outputs, skip_special_tokens=False)
+
+    # Truncate everything after first \boxed{...}
+    decoded = [truncate_after_boxed(t) for t in decoded]
+
     return decoded
+
 
 
 # ----------------------------------------------------------------------
@@ -79,6 +130,10 @@ def build_generation_dataset(df, targets, bundle, generated_dir, batch_size, pro
 
     model, tokenizer, device = bundle.model, bundle.tokenizer, bundle.device
     batch_id = 1
+    part_id = 1  # parquet file counter
+
+    # accumulator for 100 batches
+    accumulated_rows = []
 
     # expand rows
     expanded = []
@@ -132,9 +187,27 @@ def build_generation_dataset(df, targets, bundle, generated_dir, batch_size, pro
                 "is_correct": bool(is_ok),
             })
 
-        gen_df = pd.DataFrame(records)
-        gen_df.to_csv(os.path.join(generated_dir, f"generated_batch{batch_id}.csv"), index=False)
+        accumulated_rows.extend(records)
+
+        # ------------------------------------------------------------
+        # Save every 100 batches
+        # ------------------------------------------------------------
+        if batch_id % 100 == 0:
+            out_df = pd.DataFrame(accumulated_rows)
+            out_path = os.path.join(generated_dir, f"generated_part{part_id}.parquet")
+            out_df.to_parquet(out_path, index=False)
+            accumulated_rows = []  # reset accumulator
+            part_id += 1
+
         batch_id += 1
+
+    # ------------------------------------------------------------
+    # Save remainder (if fewer than 100 batches left)
+    # ------------------------------------------------------------
+    if accumulated_rows:
+        out_df = pd.DataFrame(accumulated_rows)
+        out_path = os.path.join(generated_dir, f"generated_part{part_id}.parquet")
+        out_df.to_parquet(out_path, index=False)
 
 
 # ----------------------------------------------------------------------
