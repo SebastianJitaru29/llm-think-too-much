@@ -4,8 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from vllm import LLM
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
 def main():
@@ -25,15 +24,12 @@ def main():
         assert False, "No Question or problem"
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
-    llm = LLM(
-        model=args.model_path,
-        dtype="float16",
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_path,
+        torch_dtype=torch.float16,
+        device_map="auto",
         trust_remote_code=True,
-        tensor_parallel_size=1,
-        max_model_len=32768,
     )
-
-    model = llm.get_model()
     model.eval()
 
     hidden_states = []
@@ -41,18 +37,20 @@ def main():
     for problem in problems:
         enc = tokenizer(problem, return_tensors="pt", add_special_tokens=True)
         input_ids = enc["input_ids"].to(model.device)
-        attn = enc["attention_mask"].to(model.device)
+        attention_mask = enc["attention_mask"].to(model.device)
 
         with torch.no_grad():
             out = model(
                 input_ids=input_ids,
-                attention_mask=attn,
+                attention_mask=attention_mask,
                 output_hidden_states=True,
                 use_cache=False,
             )
 
-        last_layer = out.hidden_states[-1]      # [1, seq_len, hidden_dim]
-        last_token = last_layer[0, -1, :]       # [hidden_dim]
+        # final layer hidden states: [1, seq_len, hidden_dim]
+        last_layer = out.hidden_states[-1]
+        last_token = last_layer[0, -1, :]   # [hidden_dim]
+
         hidden_states.append(last_token.cpu().numpy().astype(np.float16))
 
     hidden_states = np.stack(hidden_states, axis=0)
