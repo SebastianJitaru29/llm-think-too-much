@@ -137,11 +137,11 @@ def batch_dataset(x: np.ndarray, y: np.ndarray, batch: int, shuffle: bool = Fals
 def load_hidden_states() -> tuple[np.ndarray, np.ndarray]:
     
     h_math = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_math.npy")
-    h_math_ids = np.arange(h_math.shape[0]).astype(str)
+    h_math_ids = np.arange(h_math.shape[0])
 
     h_aim = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_aime.npy")
     temp = pd.read_parquet(Path(__file__).parent.parent / "data" / "aime.parquet")
-    h_aim_ids = temp["ID"].to_numpy()
+    h_aim_ids = np.arange(h_aim.shape[0])
 
     assert h_aim.shape[0] == temp.shape[0], "Aime mismatch"
 
