@@ -18,8 +18,8 @@ def load_df(train: bool = True) -> pd.DataFrame:
     label = "train" if train else "test"
     path =  Path(__file__).parent.parent / "data"
 
-    df_math = pd.read_parquet(path / f"{label}_math.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct', 'level'])
-    df_aime = pd.read_parquet(path / f"{label}_aime.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct', 'level'])
+    df_math = pd.read_parquet(path / f"{label}_math.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct'])
+    df_aime = pd.read_parquet(path / f"{label}_aime.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct'])
     
     return pd.concat((df_math, df_aime), ignore_index=True)
 
