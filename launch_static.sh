@@ -10,6 +10,6 @@
 #SBATCH --error=logs/static_regressor.err
 
 module purge
-module load meson-python/0.18.0-GCCcore-14.2.0
+module load Python/3.12.3-GCCcore-13.3.0
 source .venv/bin/activate
 srun python launch_regressor.py --type static --batch 8
