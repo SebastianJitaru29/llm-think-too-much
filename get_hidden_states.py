@@ -16,7 +16,13 @@ def main():
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data)
-    problems = df["problem"].astype(str).tolist()
+
+    if "problem" in df.columns:
+        problems = df["problem"].astype(str).tolist()
+    elif "Question" in df.columns:
+        problems = df["Question"].astype(str).tolist()
+    else:
+        assert False, "No Question or problem"
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     llm = LLM(
