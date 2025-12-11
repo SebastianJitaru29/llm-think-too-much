@@ -59,7 +59,7 @@ def main():
     print(f"Loading vLLM model: {args.model_path}")
     llm = LLM(
         model=args.model_path,
-        dtype="bfloat16", #On V100, use float16
+        dtype="float16", 
         trust_remote_code=True,
         tensor_parallel_size=1, 
         max_model_len=32768,    
