@@ -26,6 +26,10 @@ def main():
         raise ValueError("No Question or problem column found.")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    tokenizer.padding_side = "left" 
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=torch.float16,
@@ -59,12 +63,7 @@ def main():
                 use_cache=False,
             )
 
-        last_layer = out.hidden_states[-1]  # [B, seq_len, hidden_dim]
-
-        # Gather last-token hidden state for each sequence using attention_mask
-        # Last non-padding token index = attention_mask.sum(dim=1)-1
-        idx = attention_mask.sum(dim=1) - 1
-        batch_last_tokens = last_layer[torch.arange(len(batch)), idx]
+        batch_last_tokens = out.hidden_states[-1][:, -1, :]
 
         hidden_states.append(batch_last_tokens.cpu().numpy().astype(np.float16))
 

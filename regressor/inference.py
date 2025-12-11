@@ -23,9 +23,9 @@ def main():
     data_path = Path(__file__).parent.parent / "data"
     
     h_path = data_path / "hidden_states_test.npy"
-    h = jnp.load(h_path)
+    h = jnp.squeeze(jnp.load(h_path))
     
-    network = Regressor.load()
+    network = Regressor.load_network()
     
     df_aime = pd.read_parquet(
         data_path / "test_aime.parquet", 
