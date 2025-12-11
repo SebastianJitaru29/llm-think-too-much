@@ -1,52 +1,88 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from vllm import LLM, SamplingParams
+from fine_tuning_new import filter_text
+from fine_tuning_new import get_train_validation
+import pandas as pd
+from pathlib import Path
+from vllm.lora.request import LoRARequest
+import re
 import torch
+import gc
 
-def validation():
-    # Paths
-    base_model_name = "agentica-org/DeepScaleR-1.5B-Preview"
-    finetuned_path = "models/full_epoch_1"   # adjust if needed
-    cache_dir = "/scratch/s3799042/DeepScaleR-1.5B"
+def create_prompts(df, tokenizer):
+    think_pattern = re.compile(r"Think for\s+\d+\s+tokens\.\s*", flags=re.IGNORECASE)
+    prompts = []
+    for _, row in df.iterrows():
+        # --- Clean prompt ---
+        raw_prompt = row["shortest_prompt"]
+        clean_prompt = think_pattern.sub("", raw_prompt).strip()
 
-    def load(model_dir):
-        tokenizer = AutoTokenizer.from_pretrained(base_model_name, cache_dir=cache_dir)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_dir,
-            torch_dtype=torch.bfloat16,
-            device_map="cuda",
-            cache_dir=cache_dir,
+        messages = [
+            {"role": "user", "content": clean_prompt}
+        ]
+
+        prompt_text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True
         )
-        tokenizer.pad_token = tokenizer.eos_token
-        return tokenizer, model
+        print(prompt_text)
+        prompts.append(prompt_text)
+    
+    return prompts
 
-    def generate(model, tokenizer, prompt, max_new_tokens=2000):
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            out = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=0.001,
-                eos_token_id = tokenizer.eos_token_id
-            )
-        output = tokenizer.decode(out[0], skip_special_tokens=True)
-        print(f"\n\n LEN {len(output.split(' '))} \n\n ")
-        return output
+def validation(val_df):
+    # Base model and LoRA adapter paths
+    base_model_name = "agentica-org/DeepScaleR-1.5B-Preview"
+    lora_dir        = "models/full_epoch_1"   # change if needed
 
-    # Load models
-    tok_fine, model_fine = load(finetuned_path)
-    tok_base, model_base = load(base_model_name)
 
-    # Input prompt
-    prompt = "<｜begin▁of▁sentence｜><｜User｜>Find the center of the circle with equation $x^2 - 6x + y^2 + 2y = 9$. Let’s think step by step inside and output the final answer within boxed{}. <think><｜Assistant｜>"
+    # Sampling
+    sampling = SamplingParams(
+        max_tokens=2000,
+        temperature=0.001,
+    )
 
-    # Outputs
-    print("=== Fine-tuned Output ===")
-    print(generate(model_fine, tok_fine, prompt))
+    # ---- Fine-tuned model (base + LoRA) ----
+    print("=== Fine-tuned Output (Base + LoRA) ===")
 
-    print("\n=== Original Model Output ===")
-    print(generate(model_base, tok_base, prompt))
+    llm_fine = LLM(
+        model=base_model_name,
+        dtype="bfloat16",
+        max_model_len=3000,
+        enable_lora = True,
+        max_lora_rank = 8
+    )
+    tokenizer = llm_fine.get_tokenizer()
+    prompts =create_prompts(val_df, tokenizer)
+    out_fine = llm_fine.generate(prompts, sampling, lora_request=LoRARequest("lora_adapter", 1, lora_dir))
+    for i, result in enumerate(out_fine):
+        text = result.outputs[0].text
+        print(f"[FINE] Prompt {i} length: {len(text.split())}")
+    #print(text_fine)
 
-validation()
+    del llm_fine            # remove the reference
+    gc.collect()            # run Python garbage collection
+    torch.cuda.empty_cache() # free GPU memory
+    # ---- Base model only ----
+    print("\n=== Original Model Output (Base Only) ===")
 
-if __name__ == ("__main___"):
-    validation()
+    llm_base = LLM(
+        model=base_model_name,
+        dtype="bfloat16",
+        max_model_len=3000,
+    )
+
+    out_base = llm_base.generate(prompts, sampling)
+    for i, result in enumerate(out_base):
+        text = result.outputs[0].text
+        print(f"[BASE] Prompt {i} length: {len(text.split())}")
+    #print(text_base)
+
+
+if __name__ == "__main__":
+    data_folder = Path(__file__).parent.parent.parent.parent / "Data" / "NLP" / "Train" / "data"
+    df = pd.read_parquet(data_folder / "math_results.parquet")
+    filtered = filter_text(df)
+    train, val = get_train_validation(filtered)
+    validation(val)

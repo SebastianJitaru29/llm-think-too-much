@@ -4,8 +4,8 @@ library_name: transformers
 model_name: models
 tags:
 - generated_from_trainer
-- trl
 - dpo
+- trl
 licence: license
 ---
 
@@ -36,7 +36,7 @@ This model was trained with DPO, a method introduced in [Direct Preference Optim
 
 - TRL: 0.25.1
 - Transformers: 4.57.3
-- Pytorch: 2.9.1+cu128
+- Pytorch: 2.9.0
 - Datasets: 4.4.1
 - Tokenizers: 0.22.1
 

@@ -267,7 +267,7 @@ def train(train_df, val_df, continue_from: str = None):
     n_epochs = 20
     for epoch in range(n_epochs):
         trainer.train()
-        model.save_pretrained(f"{OUTPUT_DIR}/full_epoch_{epoch+1}")
+        model.save_pretrained(f"{OUTPUT_DIR}/full_epoch_{epoch+2}")
 
 def prompt():
     model_name = "Qwen/Qwen3-4B"
@@ -323,12 +323,13 @@ def print_dataset(train_df, val_df):
             break
 
 
-data_folder = Path(__file__).parent.parent.parent.parent / "Data" / "NLP" / "Train" / "data"
-df = pd.read_parquet(data_folder / "math_results.parquet")
-print(df.columns)
-print(len(df['question_id'].unique()))
-half_df = len(df) // 2
-filtered_df = filter_text(df)
-train_df, val_df = get_train_validation(filtered_df)
-train(train_df, val_df, Path(__file__).parent / "models" / "epoch_1")
+if __name__ == "__main__":
+    data_folder = Path(__file__).parent.parent.parent.parent / "Data" / "NLP" / "Train" / "data"
+    df = pd.read_parquet(data_folder / "math_results.parquet")
+    print(df.columns)
+    print(len(df['question_id'].unique()))
+    half_df = len(df) // 2
+    filtered_df = filter_text(df)
+    train_df, val_df = get_train_validation(filtered_df)
+    train(train_df, val_df, Path(__file__).parent / "models" / "full_epoch_1")
 #print_dataset(train_df, val_df)
