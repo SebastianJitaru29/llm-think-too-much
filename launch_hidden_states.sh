@@ -14,4 +14,6 @@ module load Python/3.11.5-GCCcore-13.2.0
 module load CUDA/12.1.1
 
 source .venv/bin/activate
-srun python get_hidden_states.py --data ./data/math.parquet --model ./models/L1-Qwen3-8B-Max/ --output ./regressor/innit_hidden_states/hidden_states_math.npy --batch-size 32
+srun python get_hidden_states.py --data ./data/math.parquet --model ./models/L1-Qwen3-8B-Max/ --output ./regressor/innit_hidden_states/hidden_states_math.npy --batch-size 16
+# python get_hidden_states.py --data ./data/aime.parquet --model ./models/L1-Qwen3-8B-Max/ --output ./regressor/innit_hidden_states/hidden_states_aime.npy --batch-size 8
+# python get_hidden_states.py --data ./data/test_all.parquet --model ./models/L1-Qwen3-8B-Max/ --output ./data/hidden_states_test.npy --batch-size 8
