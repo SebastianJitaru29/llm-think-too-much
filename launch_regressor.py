@@ -83,7 +83,6 @@ def main():
         records.append({
             "question_id": i,
             "prompt": prompts[i],
-            "solution_col": row["solution"],
             "generated_think_text": think_texts[i],
             "generated_text": full_text,
             "target_think_tokens": int(targets[i]),
