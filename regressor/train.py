@@ -253,7 +253,7 @@ if __name__ == "__main__":
     # matplotlib.use("Qt5Agg")
 
     x, y, bins = get_dataset()
-    network, tl, vl, va, vtnr = train(x, y, bins=bins, epochs=150, batch_size=512, dropout=0.20)
+    network, tl, vl, va, vtnr = train(x, y, bins=bins, epochs=80, batch_size=512, dropout=0.20)
 
     Regressor.save_network(network)
 

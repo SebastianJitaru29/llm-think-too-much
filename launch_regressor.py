@@ -31,7 +31,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--generated-dir", required=True)
-    parser.add_argument("--file-name", default="regressor_results")
+    parser.add_argument("--file-name", default="static_regressor_results")
     args = parser.parse_args()
 
     df = pd.read_parquet("./data/test_all.parquet")
