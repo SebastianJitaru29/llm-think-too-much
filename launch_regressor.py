@@ -23,8 +23,14 @@ def extract_think_text(full_text: str) -> str:
 def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
     exp_val = extract_boxed(expected_answer)
     gen_val = extract_boxed(generated_answer)
+
+    if exp_val is None:
+        exp_val = expected_answer.strip()
+
     if exp_val is None or gen_val is None:
+        print("Expected value is none")
         return False
+    
     return is_equiv(gen_val, exp_val)
 
 def main():
@@ -83,6 +89,7 @@ def main():
         records.append({
             "question_id": i,
             "prompt": prompts[i],
+            "solution": row["solution"],
             "generated_think_text": think_texts[i],
             "generated_text": full_text,
             "target_think_tokens": int(targets[i]),
