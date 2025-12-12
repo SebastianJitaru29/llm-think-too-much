@@ -177,7 +177,7 @@ def train(
     x_valid, y_valid = x[valid_idx], y[valid_idx]
 
     
-    layers = (1_536, 1024, 512, 256, 10)
+    layers = (4_096, 1024, 512, 256, 10)
 
     network = Regressor(
         arch=Regressor.init_mlp(
