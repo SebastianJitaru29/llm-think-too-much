@@ -13,4 +13,5 @@ module purge
 module load Python/3.11.5-GCCcore-13.2.0
 module load CUDA/12.1.1
 
+source .venv/bin/activate
 srun python launch_regressor.py --model-path ./models/L1-Qwen3-8B-Max/ --generated-dir ./data
