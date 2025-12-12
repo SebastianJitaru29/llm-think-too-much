@@ -1,4 +1,7 @@
-import argparse, re, time, os
+import argparse
+import re
+import time
+import os
 import numpy as np
 import pandas as pd 
 from vllm import LLM, SamplingParams
@@ -26,37 +29,20 @@ def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--generated-dir", required=True)
-    parser.add_argument("--file-name", default="aime_results_long")
+    parser.add_argument("--file-name", default="regressor_results")
     args = parser.parse_args()
 
-    print(f"Loading data from {args.data}...")
-    df = pd.read_parquet(args.data)
-    targets = np.linspace(start=100, stop=5000, num=20, endpoint=True, dtype=int)
-    #df = df.sample(n=10, random_state=42).reset_index(drop=True)
-    expanded = []
-    for qid, row in df.iterrows():
-        for tgt in targets:
-            expanded.append({
-                "question_id": qid,
-                "problem": str(row["problem"]),
-                "solution": str(row["solution"]),
-                "target_think_tokens": int(tgt),
-            })
+    df = pd.read_parquet("./data/test_all.parquet")
+    targets = np.load("./data/test_target_tokens.npy")
     
-    expanded_df = pd.DataFrame(expanded)
-
-    expanded_df["__original_index"] = range(len(expanded_df))
-    
-    expanded_df = expanded_df.sort_values(by="target_think_tokens", ascending=True)
+    if len(df) != len(targets):
+        raise ValueError(f"Data length mismatch: DataFrame has {len(df)} rows, targets has {len(targets)} elements.")
 
     os.makedirs(args.generated_dir, exist_ok=True)
-    print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     
-    print(f"Loading vLLM model: {args.model_path}")
     llm = LLM(
         model=args.model_path,
         dtype="float16", 
@@ -67,12 +53,10 @@ def main():
 
     sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
 
-    prompts = [
-        build_prompt(row["problem"], row["target_think_tokens"]) 
-        for _, row in expanded_df.iterrows()
-    ]
+    prompts = []
+    for i in range(len(df)):
+        prompts.append(build_prompt(df.iloc[i]["problem"], targets[i]))
 
-    print(f"Starting generation for {len(prompts)} prompts...")
     t0 = time.perf_counter()
     outputs = llm.generate(prompts, sampling_params)
     t1 = time.perf_counter()
@@ -84,7 +68,6 @@ def main():
         prompt_text = prompts[i]
         generated_suffix = output.outputs[0].text
         full_text = prompt_text + generated_suffix
-        
         generated_texts.append(full_text)
         think_texts.append(extract_think_text(full_text))
 
@@ -92,32 +75,26 @@ def main():
     think_lengths = [len(ids) for ids in think_encodings]
 
     records = []
-    for i in range(len(expanded_df)):
-        row = expanded_df.iloc[i]
+    for i in range(len(df)):
+        row = df.iloc[i]
         full_text = generated_texts[i]
         is_ok = evaluate_answer(row["solution"], full_text)
 
         records.append({
-            "__original_index": row["__original_index"], # Keep track
-            "question_id": row["question_id"],
+            "question_id": i,
             "prompt": prompts[i],
             "solution_col": row["solution"],
             "generated_think_text": think_texts[i],
             "generated_text": full_text,
-            "target_think_tokens": row["target_think_tokens"],
+            "target_think_tokens": int(targets[i]),
             "generated_think_tokens": think_lengths[i],
             "latency_sec": (t1 - t0) / len(prompts),
             "is_correct": bool(is_ok),
         })
 
-    print("Restoring original dataset order...")
     final_df = pd.DataFrame(records)
-    final_df = final_df.sort_values(by="__original_index", ascending=True)
-    final_df = final_df.drop(columns=["__original_index"])
-
     out_path = os.path.join(args.generated_dir, f"{args.file_name}.parquet")
     final_df.to_parquet(out_path, index=False)
-    print(f"Saved {len(final_df)} records to {out_path}")
 
 if __name__ == "__main__":
     main()
