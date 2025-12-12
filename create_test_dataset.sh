@@ -16,9 +16,9 @@ df_aime_ids = pd.read_parquet("./data/test_aime.parquet")["question_id"].unique(
 df_aime = pd.read_parquet("./data/aime.parquet")
 df_aime["question_id"] = np.arange(df_aime.shape[0])
 df_aime = df_aime[df_aime["question_id"].isin(df_aime_ids)]
-df_aime = df_aime.rename(columns={"Question": "problem"})
+df_aime = df_aime.rename(columns={"Question": "problem", "Answer": "solution"})
 
-df_all_problem = pd.concat((df_aime[["problem"]], df_500[["problem"]]), ignore_index=True)
+df_all_problem = pd.concat((df_aime[["problem", "solution"]], df_500[["problem", "solution"]]), ignore_index=True)
 df_all_problem.to_parquet("./data/test_all.parquet", index=False)
 EOF
 
