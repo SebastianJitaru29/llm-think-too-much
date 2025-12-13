@@ -12,10 +12,10 @@
 echo "Job started on $(hostname) at $(date)"
 module purge
 #module load PyTorch-bundle/2.1.2-foss-2023a-CUDA-12.1.1
-source .llmvenv/bin/activate
+source /home4/s6019595/.llmvenv/bin/activate
 srun python3 launch_experiments.py \
   --data ./data/math_part1.parquet \
-  --model-path ../../../scratch/s6019595/models/L1-Qwen3-8B-Max/ \
+  --model-path /scratch/s6019595/models/L1-Qwen3-8B-Max/ \
   --generated-dir ./data/generated \
   --file-name math1_results_long
 echo "Job ended at $(date)"

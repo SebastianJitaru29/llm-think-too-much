@@ -63,6 +63,7 @@ def main():
         trust_remote_code=True,
         tensor_parallel_size=1, 
         max_model_len=32768,    
+        #gpu_memory_utilization=0.8,
     )
 
     sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
