@@ -10,13 +10,18 @@ from functools import partial
 
 from architecture import Regressor
 
+
 def load_df(train: bool = True) -> pd.DataFrame:
 
+    assert train
+
     label = "train" if train else "test"
-    path =  Path(__file__).parent.parent / "data" / f"{label}.parquet"
-    df = pd.read_parquet(path, columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct', 'level'])
+    path =  Path(__file__).parent.parent / "data"
+
+    df_math = pd.read_parquet(path / f"{label}_math.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct'])
+    df_aime = pd.read_parquet(path / f"{label}_aime.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct'])
     
-    return df
+    return pd.concat((df_math, df_aime), ignore_index=True)
 
 
 def create_regressor_dataset(h: np.ndarray, h_ids: np.ndarray, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
@@ -132,11 +137,11 @@ def batch_dataset(x: np.ndarray, y: np.ndarray, batch: int, shuffle: bool = Fals
 def load_hidden_states() -> tuple[np.ndarray, np.ndarray]:
     
     h_math = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_math.npy")
-    h_math_ids = np.arange(h_math.shape[0]).astype(str)
+    h_math_ids = np.arange(h_math.shape[0])
 
     h_aim = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_aime.npy")
     temp = pd.read_parquet(Path(__file__).parent.parent / "data" / "aime.parquet")
-    h_aim_ids = temp["ID"].to_numpy()
+    h_aim_ids = np.arange(h_aim.shape[0])
 
     assert h_aim.shape[0] == temp.shape[0], "Aime mismatch"
 
@@ -172,7 +177,7 @@ def train(
     x_valid, y_valid = x[valid_idx], y[valid_idx]
 
     
-    layers = (1_536, 1024, 512, 256, 10)
+    layers = (4_096, 1024, 512, 256, 10)
 
     network = Regressor(
         arch=Regressor.init_mlp(
@@ -244,11 +249,11 @@ def calc_baseline_stats(y: np.ndarray) -> tuple[float, float]:
 
 if __name__ == "__main__":
     from matplotlib import pyplot as plt
-    import matplotlib
-    matplotlib.use("Qt5Agg")
+    # import matplotlib
+    # matplotlib.use("Qt5Agg")
 
     x, y, bins = get_dataset()
-    network, tl, vl, va, vtnr = train(x, y, bins=bins, epochs=150, batch_size=512, dropout=0.20)
+    network, tl, vl, va, vtnr = train(x, y, bins=bins, epochs=80, batch_size=512, dropout=0.20)
 
     Regressor.save_network(network)
 
@@ -265,5 +270,5 @@ if __name__ == "__main__":
 
     ax.set_xlabel("Epochs", fontsize=12)
 
-    plt.show()
+    fig.savefig("./perf.png")
 

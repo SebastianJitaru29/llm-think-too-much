@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-set -e
-
 mkdir -p data
 
 python3 - <<'EOF'
