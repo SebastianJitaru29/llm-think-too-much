@@ -1,10 +1,3 @@
-"""
-Evaluation Pipeline for Math Reasoning Models
-
-Evaluates models on GSM8K, Olympiad, and AMC datasets.
-Reports accuracy and token counts per dataset.
-"""
-
 import argparse
 import re
 import gc
@@ -21,12 +14,7 @@ from transformers import AutoTokenizer
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from math_equivalence import is_equiv
-
-
-# =============================================================================
-# Data Classes
-# =============================================================================
-
+from data_extraction import load_dataset_by_name
 @dataclass
 class EvalResult:
     """Results for a single dataset evaluation."""
@@ -40,7 +28,7 @@ class EvalResult:
 
 
 # =============================================================================
-# Answer Extraction & Evaluation
+# Answer Extraction and Evaluation
 # =============================================================================
 
 def extract_boxed(s: str) -> str | None:
@@ -107,157 +95,6 @@ def evaluate_answer(expected: str, generated: str, dataset_type: str = "math") -
         return False
     
     return is_equiv(gen_val, exp_val)
-
-
-# =============================================================================
-# Dataset Loaders
-# =============================================================================
-
-def load_gsm8k(split: str = "test") -> pd.DataFrame:
-    """
-    Load GSM8K dataset from HuggingFace.
-    
-    GSM8K contains grade school math word problems.
-    Columns: question, answer (with #### marker for final answer)
-    """
-    from datasets import load_dataset
-    
-    dataset = load_dataset("openai/gsm8k", "main", split=split)
-    df = pd.DataFrame(dataset)
-    
-    # Standardize column names
-    df = df.rename(columns={
-        "question": "problem",
-        "answer": "solution"
-    })
-    df["unique_id"] = [f"gsm8k_{i}" for i in range(len(df))]
-    
-    return df[["unique_id", "problem", "solution"]]
-
-
-def load_olympiad(split: str = "test") -> pd.DataFrame:
-    """
-    Load OlympiadBench dataset from HuggingFace.
-    
-    Contains Olympiad-level competition math problems.
-    """
-    from datasets import load_dataset
-    
-    try:
-        # Try loading OlympiadBench
-        dataset = load_dataset("lmms-lab/OlympiadBench", split=split)
-        df = pd.DataFrame(dataset)
-        
-        # Standardize column names based on actual dataset structure
-        if "question" in df.columns:
-            df = df.rename(columns={"question": "problem"})
-        if "answer" in df.columns:
-            df = df.rename(columns={"answer": "solution"})
-        
-        df["unique_id"] = [f"olympiad_{i}" for i in range(len(df))]
-        
-    except Exception as e:
-        print(f"Warning: Could not load OlympiadBench directly: {e}")
-        print("Attempting to load from alternative source...")
-        
-        # Fallback: Try MATH dataset Level 5 problems as proxy for Olympiad-level
-        try:
-            dataset = load_dataset("hendrycks/competition_math", split="test")
-            df = pd.DataFrame(dataset)
-            # Filter for highest difficulty levels
-            if "level" in df.columns:
-                df = df[df["level"].isin(["Level 5", "Level 4"])]
-            
-            df = df.rename(columns={
-                "problem": "problem",
-                "solution": "solution"
-            })
-            df["unique_id"] = [f"olympiad_{i}" for i in range(len(df))]
-        except Exception as e2:
-            print(f"Warning: Could not load competition_math either: {e2}")
-            # Return empty DataFrame if both fail
-            return pd.DataFrame(columns=["unique_id", "problem", "solution"])
-    
-    return df[["unique_id", "problem", "solution"]]
-
-
-def load_amc() -> pd.DataFrame:
-    """
-    Load AMC (American Mathematics Competition) dataset.
-    
-    Uses AIME dataset which contains AMC/AIME level problems.
-    """
-    from datasets import load_dataset
-    
-    try:
-        # Try loading AMC-specific dataset
-        df = pd.read_csv("hf://datasets/di-zhang-fdu/AIME_1983_2024/AIME_Dataset_1983_2024.csv")
-        
-        # Standardize column names
-        df = df.rename(columns={
-            "Question": "problem",
-            "Answer": "solution"
-        })
-        
-        if "ID" in df.columns:
-            df["unique_id"] = df["ID"].apply(lambda x: f"amc_{x}")
-        else:
-            df["unique_id"] = [f"amc_{i}" for i in range(len(df))]
-            
-    except Exception as e:
-        print(f"Warning: Could not load AIME dataset: {e}")
-        print("Attempting alternative AMC source...")
-        
-        try:
-            # Try alternative source
-            dataset = load_dataset("AI-MO/aimo-validation-amc", split="train")
-            df = pd.DataFrame(dataset)
-            
-            if "problem" not in df.columns and "question" in df.columns:
-                df = df.rename(columns={"question": "problem"})
-            if "solution" not in df.columns and "answer" in df.columns:
-                df = df.rename(columns={"answer": "solution"})
-                
-            df["unique_id"] = [f"amc_{i}" for i in range(len(df))]
-        except Exception as e2:
-            print(f"Warning: Could not load alternative AMC source: {e2}")
-            return pd.DataFrame(columns=["unique_id", "problem", "solution"])
-    
-    return df[["unique_id", "problem", "solution"]]
-
-
-def load_dataset_by_name(
-    name: Literal["gsm8k", "olympiad", "amc"],
-    split: str = "test",
-    sample_size: int | None = None
-) -> pd.DataFrame:
-    """
-    Load a dataset by name.
-    
-    Args:
-        name: Dataset name (gsm8k, olympiad, or amc)
-        split: Data split to use
-        sample_size: Optional number of samples to use (for testing)
-    
-    Returns:
-        DataFrame with columns: unique_id, problem, solution
-    """
-    loaders = {
-        "gsm8k": lambda: load_gsm8k(split),
-        "olympiad": lambda: load_olympiad(split),
-        "amc": load_amc,
-    }
-    
-    if name not in loaders:
-        raise ValueError(f"Unknown dataset: {name}. Choose from: {list(loaders.keys())}")
-    
-    df = loaders[name]()
-    
-    if sample_size is not None and len(df) > sample_size:
-        df = df.sample(n=sample_size, random_state=42).reset_index(drop=True)
-    
-    print(f"Loaded {name}: {len(df)} problems")
-    return df
 
 
 # =============================================================================
