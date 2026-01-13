@@ -1,173 +1,256 @@
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from datasets import load_dataset
-from datasets import Dataset
-from peft import LoraConfig, get_peft_model
-from trl import DPOTrainer, DPOConfig
+import os 
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import pandas as pd
-import re
 from pathlib import Path
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from datasets import Dataset
+from peft import LoraConfig, get_peft_model, PeftModel
+from trl import DPOTrainer, DPOConfig
+from collections import Counter
+import math
+import numpy as np
+import torch
+import re
+
+def extract_generated_text(df):
+    splitted = df["generated_text"].str.split("Let’s think step by step inside and output the final answer within boxed{}.", n=1, expand=True)
+    out_text = splitted[1].str.replace(r"Think for \d+ tokens\. +", "", n=1, regex=True).str.strip()
+    return out_text
+
+def missing_think_end_mask(text):
+    end_counts = text.str.count("</think>")
+    missing_think_end_mask = end_counts != 0
+    return missing_think_end_mask
+
+def zero_think_mask(df):
+    mask = df["generated_think_tokens"] != 0
+    return mask
+
+def math500_mask(df):
+    df_500 = pd.read_json(
+        "hf://datasets/HuggingFaceH4/MATH-500/test.jsonl",
+        lines=True
+    )
+    problems = df_500["problem"].tolist()
+
+    mask = df["prompt"].apply(
+        lambda p: not any(problem in p for problem in problems)
+    )
+    return mask
+
+def repetition_score(text):
+    words = text.lower().split()
+    counts = Counter(words)
+    total = len(words)
+    k = len(counts)
+
+    if k <= 1:   # fully degenerate case
+        return 1.0
+
+    # Shannon entropy
+    H = -sum((c/total) * math.log(c/total) for c in counts.values())
+
+    # Normalized entropy
+    H_norm = H / math.log(k)
+
+    return H_norm
+
+def repetition_score(text):
+    words = text.lower().split()
+    counts = Counter(words)
+    total = len(words)
+    k = len(counts)
+
+    if k <= 1:   # fully degenerate case
+        return 1.0
+
+    # Shannon entropy
+    H = -sum((c/total) * math.log(c/total) for c in counts.values())
+
+    # Normalized entropy
+    H_norm = H / math.log(k)
+
+    return H_norm
+
+def low_entropy_mask(text):
+    entropy = text.map(repetition_score)
+    low_entropy_mask = entropy > entropy.quantile(0.004)
+    return low_entropy_mask
+
+def filter_text(df):
+    text = extract_generated_text(df)
+    mask0 = missing_think_end_mask(text)
+    mask1 = low_entropy_mask(text)
+    mask2 = zero_think_mask(df)
+    mask3 = math500_mask(df)
+    initial_count = len(df)
+    df = df[mask0 & mask1 & mask2 & mask3]
+    print(f"filtered out: {initial_count-len(df)} from {initial_count}")
+    return df
 
 
-BASE_MODEL = "agentica-org/DeepScaleR-1.5B-Preview"
-TRAIN_PATH = Path(__file__).parent.parent / "train.parquet" 
-OUTPUT_DIR = "./qwen-1.5B-dpo-lora"
+def split_train_validation(df, val_question_ids):
 
-def read_data(train_path):
-    results = {}
+    val_question_ids = set(val_question_ids)
 
-    df = pd.read_parquet(train_path)
-    for _, row in df.iterrows():
-        qid = row['question_id']
-        level = row["level"]
-        tokens = int(row['generated_think_tokens'])
-        correct = row['is_correct'].strip().lower() == 'true'
+    # Validation set: all rows whose question_id is in the supplied list
+    df_val = df[df["question_id"].isin(val_question_ids)].copy()
 
-        if (qid, level) not in results:
-            results[(qid, level)] = {'min_true': None, 'max_any': None}
+    # Training set: all remaining rows
+    df_train = df[~df["question_id"].isin(val_question_ids)].copy()
 
-        if correct:
-            cur = results[(qid, level)]['min_true']
-            if cur is None or tokens < cur['generated_think_tokens']:
-                results[(qid, level)]['min_true'] = row
-                row['generated_think_tokens'] = tokens
+    return df_train, df_val
 
-        cur = results[(qid, level)]['max_any']
-        if cur is None or tokens > cur['generated_think_tokens']:
-            results[(qid, level)]['max_any'] = row
-            row['generated_think_tokens'] = tokens
+def get_train_validation(df):
+    df = df.copy()
+    df["is_correct_norm"] = df["is_correct"].astype(str).str.strip().str.lower() == "true"
+    df["generated_think_tokens"] = df["generated_think_tokens"].astype(int)
 
-    for (qid, level), vals in list(results.items()):
-        a = vals['min_true']
-        b = vals['max_any']
-        
-        if a is None or b is None:
-            continue
-        if a['generated_think_tokens'] == b['generated_think_tokens']:
-            results[(qid, level)] = None
+    # Shortest correct per question_id
+    shortest_correct = (
+        df[df["is_correct_norm"]]
+        .sort_values(["question_id", "generated_think_tokens"])
+        .groupby("question_id", as_index=False)
+        .first()                    # shortest correct
+        .drop(columns=["is_correct_norm"])
+        .rename(columns=lambda c: f"shortest_{c}" if c != "question_id" else c)
+    )
+
+    # Longest any answer per question_id
+    longest_any = (
+        df.sort_values(["question_id", "generated_think_tokens"], ascending=[True, False])
+        .groupby("question_id", as_index=False)
+        .first()                    # longest
+        .drop(columns=["is_correct_norm"])
+        .rename(columns=lambda c: f"longest_{c}" if c != "question_id" else c)
+    )
+    out = shortest_correct.merge(longest_any, on="question_id", how="inner")
+
+    train_df, val_df = split_train_validation(out, np.arange(0, 10, 1))
+
+    return train_df, val_df
+
     
-    return results
+def build_dpo_dataset(train_df, tokenizer, eos_token):
+    """
+    Create DPO-ready dataset entries from a dataframe with:
+      - shortest_prompt
+      - shortest_generated_text
+      - longest_generated_text
+    """
 
-# L1 produces often the same answer copied after each other in order to get to the
-# target tokens
-def remove_duplicate_answers(text):
-    split = re.split(r"<\/think>", text)
-    after_last_think = split[-1]
-    before_last_think = split[:-1][0] + "</think>"
+    dpo_data = []
 
-    result = re.search(r"^(.*?\\boxed\{.*?\})", after_last_think, flags=re.DOTALL)
-    if result:
-        return before_last_think + result[0]
-    
-    return ""
+    # regex for removing "Think for N tokens."
+    think_pattern = re.compile(r"Think for\s+\d+\s+tokens\.\s*", flags=re.IGNORECASE)
 
-# Often the <｜end▁of▁sentence｜> and "<｜begin▁of▁sentence｜>" is copied an absured amount of times
-# in order to reach the desired amount of tokens
-def clean_special_tokens(text):
-    text = text.replace("<｜end▁of▁sentence｜>", "")
-    parts = text.split("<｜begin▁of▁sentence｜>", 2) 
-    if len(parts) >= 2:
-        text ="<｜begin▁of▁sentence｜>" + parts[1] 
+    # regex to remove leading text until <think>
+    strip_before_think = re.compile(r"(?is)^.*?(?=<think>)")
 
-    text = text + "<｜end▁of▁sentence｜>"
-    
-    return text
+    for _, row in train_df.iterrows():
+        # --- Clean prompt ---
+        raw_prompt = row["shortest_prompt"]
+        clean_prompt = think_pattern.sub("", raw_prompt).strip()
 
-def clean_generated_text(text):
-    #text = remove_duplicate_answers(text)
-    text = clean_special_tokens(text)
-    return text
+        messages = [
+            {"role": "user", "content": clean_prompt}
+        ]
 
-def clean_data_rows(data_rows):
-    for row in data_rows:
-        row['prompt'] = re.sub(r"Think for \d+ tokens\. \<think\>", "", row['prompt'])
-        row['prompt'] = re.sub(r"Think for \d+ tokens\.", "", row['prompt'])
-        row['chosen'] = clean_generated_text(row['chosen'])
-        row['rejected'] = clean_generated_text(row['rejected'])
+        prompt_text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True
+        )
 
-    return data_rows
+        # --- Clean outputs ---
+        short_out = row["shortest_generated_text"]
+        long_out  = row["longest_generated_text"]
 
-def contains_chinese(text):
-    for char in text:
-        if '\u4e00' <= char <= '\u9fff':
-            return True
-    return False
+        clean_short = strip_before_think.sub("", short_out).strip() + eos_token
+        clean_long  = strip_before_think.sub("", long_out).strip() + eos_token
 
-def remove_chinese_answers(data_rows):
-    new_data_rows = []
-    count_chinese = 0
-    for row in data_rows:
-        if contains_chinese(row['chosen']) or contains_chinese(row['rejected']):
-            count_chinese += 1
-            continue
-        new_data_rows.append(row)
-
-    print(f"{count_chinese}  chinese answers removed")
-    return new_data_rows
-
-def remove_empty_values(data_rows):
-    new_data_rows = []
-    count_empty = 0
-    for row in data_rows:
-        if row['chosen'] == "" or row['rejected']=="":
-            count_empty += 1
-            continue
-        new_data_rows.append(row)
-
-    print(f"{count_empty}  empty answers removed")
-    return new_data_rows
-
-def convert_data_to_dataset(data: dict):
-    data_rows = []
-    for (qid, level), vals in data.items():
-        if not vals or vals.get('min_true') is None or vals.get('max_any') is None:
-            continue
-        if vals['min_true']['generated_think_tokens'] == vals['max_any']['generated_think_tokens']:
-            continue
-
-        data_rows.append({
-            'prompt': vals['min_true']['prompt'],
-            'chosen': vals['min_true']['generated_text'],
-            'rejected': vals['max_any']['generated_text']
+        # --- Build DPO entry ---
+        dpo_data.append({
+            "prompt": prompt_text,
+            "chosen": clean_short,
+            "rejected": clean_long,
         })
 
-    data_rows = clean_data_rows(data_rows)
-    data_rows = remove_empty_values(data_rows)
-    data_rows = remove_chinese_answers(data_rows)
-    dataset = Dataset.from_list(data_rows)
-    return dataset
+    return dpo_data
+
+def print_dpo_dataset(dataset, tokenizer):
+
+    '''
+        n_tokens = len(tokenizer(row['rejected'], return_tensors="pt")['input_ids'][0])
+        if n_tokens > 2200:
+            print(n_tokens)
+    '''
+
+    for idx,row in enumerate(dataset):
+
+        print(f"PROMPT: {row['prompt']} \n, CHOSEN {row['chosen']} \n, REJECTED {row['rejected']}\n\n")
+        if idx == 5:
+            break
 
 
-def create_dataset():
-    data = read_data(TRAIN_PATH)
-    dataset = convert_data_to_dataset(data)
-    return dataset
+def train(train_df, val_df, continue_from: str = None):
+    OUTPUT_DIR = Path(__file__).parent / "models"
+    model_name = "agentica-org/DeepScaleR-1.5B-Preview"
+    model_path = "/scratch/s3799042/DeepScaleR-1.5B"
 
-def fine_tune_model():
-    dataset = create_dataset()
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=model_path)
+
+    train_list = build_dpo_dataset(train_df, tokenizer, eos_token=tokenizer.eos_token)
+    val_list   = build_dpo_dataset(val_df, tokenizer, eos_token=tokenizer.eos_token)
+    dataset     = Dataset.from_list(train_list)
+    dataset_val = Dataset.from_list(val_list)
+
     tokenizer.pad_token = tokenizer.eos_token
-    model_kwargs = {"torch_dtype": torch.float16, "device_map": "auto"}
-    model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, **model_kwargs)
 
-    lora_config = LoraConfig(
-        r=8,
-        lora_alpha=16,
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
+    if continue_from is None:
+        base = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda",
+            cache_dir=model_path,
+        )
+
+        lora_config = LoraConfig(
+            r=8,
+            lora_alpha=16,
+            target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+
+        model = get_peft_model(base, lora_config)
+
+    else:
+        base = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda",
+            cache_dir=model_path,
+        )
+
+        model = PeftModel.from_pretrained(
+            base,
+            continue_from,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda",
+        )
 
     dpo_args = DPOConfig(
         output_dir=OUTPUT_DIR,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=8,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=32,
         learning_rate=1e-5,
         num_train_epochs=1,
-        max_length=10_000,
+        max_length=3_000,
         logging_steps=10,
         save_strategy="epoch",
         report_to="none",
@@ -175,19 +258,97 @@ def fine_tune_model():
 
     trainer = DPOTrainer(
         model=model,
-        ref_model=None,  # if None, uses a frozen copy of base model
+        ref_model=None,
         args=dpo_args,
         train_dataset=dataset,
+        eval_dataset=dataset_val,
     )
 
     n_epochs = 20
     for epoch in range(n_epochs):
         trainer.train()
-        model.save_pretrained(f"{OUTPUT_DIR}/epoch_{epoch+1}")
+        model.save_pretrained(f"{OUTPUT_DIR}/full_epoch_{epoch+5}")
+
+def prompt():
+    model_name = "Qwen/Qwen3-4B"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    prompt = "Two standard 6-sided dice are tossed. What is the probability that the sum of the numbers shown on the dice is a prime number? Express your answer as a common fraction."
+    
+    messages = [
+    {"role": "user", "content": prompt}
+    ]
+    text = tokenizer.apply_chat_template(
+    messages,
+    tokenize=False,
+    add_generation_prompt=True,
+    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.
+    )
+    
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype="auto",
+        device_map="auto"
+    )
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    eos_id = tokenizer.eos_token_id
+    bos_id = tokenizer.bos_token_id
 
 
+    output_ids = model.generate(
+        **inputs,
+        max_new_tokens=5000,
+        temperature=0.001,          # deterministic
+        eos_token_id=eos_id, 
+        bos_token_id=bos_id  
+    )
+
+    response = tokenizer.decode(output_ids[0], skip_special_tokens=False)
+    print(response)
 
 
-fine_tune_model()
+def print_dataset(train_df, val_df):
+    print(train_df.columns)
+    for idx, row in train_df.iterrows():
+        print(f"Question {row['question_id']}: \n SHORTEST PROMPT: {row['shortest_prompt']} \n SHORTEST ANSWER: {row['shortest_generated_text']} \n \n")
+        print(f"Question {row['question_id']}: \n LONGEST PROMPT: {row['longest_prompt']} \n LONGEST ANSWER: {row['longest_generated_text']} \n \n")
+        if idx == 5:
+            break
+
+    print("VALIDATION \n")
+
+    for idx, row in val_df.iterrows():
+        print(f"Question {row['question_id']}: \n SHORTEST PROMPT: {row['shortest_prompt']} \n SHORTEST ANSWER: {row['shortest_generated_text']} \n \n")
+        print(f"Question {row['question_id']}: \n LONGEST PROMPT: {row['longest_prompt']} \n LONGEST ANSWER: {row['longest_generated_text']} \n \n")
+        if idx == 5:
+            break
+
+def split_dataset(df):
+    # Number of unique question_ids you want in the test set
+    n_test_questions = 250
+
+    # 1. Get unique question_ids
+    unique_questions = df["question_id"].unique()
+    print(f"number unique questions: {len(unique_questions)}")
+
+    # 2. Randomly choose test question_ids
+    np.random.seed(42)  # for reproducibility
+    test_question_ids = np.random.choice(unique_questions, size=n_test_questions, replace=False)
+
+    # 3. Split the dataframe
+    test_df = df[df["question_id"].isin(test_question_ids)]
+    train_df = df[~df["question_id"].isin(test_question_ids)]
+
+    print(f"Train rows: {len(train_df)}, Test rows: {len(test_df)}")
+    print(f"Train questions: {train_df['question_id'].nunique()}, Test questions: {test_df['question_id'].nunique()}")
+    
+    test_df.to_parquet("test_aime.parquet")
+    train_df.to_parquet("train_aime.parquet")
 
 
+if __name__ == "__main__":
+    data_path = "/home3/s3799042/data/MATH/math_results.parquet"# "/projects/s3799042/data/new_nlp_dataset/data/math_results.parquet"#Path(__file__).parent.parent.parent.parent / "Data" / "NLP" / "Train" / "data"
+    
+    df = pd.read_parquet(data_path)
+    filtered_df = filter_text(df)
+    train_df, val_df = get_train_validation(filtered_df)
+    train(train_df, val_df, Path(__file__).parent / "models" / "full_epoch_4")
