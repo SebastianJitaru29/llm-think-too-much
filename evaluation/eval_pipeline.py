@@ -14,7 +14,73 @@ from transformers import AutoTokenizer
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from math_equivalence import is_equiv
-from data_extraction import load_dataset_by_name
+
+EVAL_DATASET_PATH = Path(__file__).parent.parent / "data" / "processing" / "raw" / "eval_dataset.parquet"
+AVAILABLE_DATASETS = ["MATH-500", "GSM8K", "Olympiad"]
+
+
+def load_eval_dataset(
+    datasets: list[str] | None = None,
+    sample_size: int | None = None,
+) -> pd.DataFrame:
+    """
+    Load evaluation dataset from local parquet file.
+    
+    Args:
+        datasets: List of dataset names to load. If None, loads all datasets.
+                  Available: MATH-500, GSM8K, Olympiad
+        sample_size: Optional number of samples per dataset (for testing)
+    
+    Returns:
+        DataFrame with columns: id, dataset, problem, solution, level
+    """
+    if not EVAL_DATASET_PATH.exists():
+        raise FileNotFoundError(
+            f"Evaluation dataset not found at {EVAL_DATASET_PATH}. "
+            "Please ensure the data file exists."
+        )
+    
+    df = pd.read_parquet(EVAL_DATASET_PATH)
+    
+    # Filter by dataset names if specified
+    if datasets is not None:
+        # Validate dataset names
+        invalid = set(datasets) - set(AVAILABLE_DATASETS)
+        if invalid:
+            raise ValueError(
+                f"Unknown dataset(s): {invalid}. "
+                f"Available: {AVAILABLE_DATASETS}"
+            )
+        df = df[df["dataset"].isin(datasets)]
+    
+    # Apply sample size per dataset
+    if sample_size is not None:
+        df = df.groupby("dataset").apply(
+            lambda x: x.sample(n=min(sample_size, len(x)), random_state=42)
+        ).reset_index(drop=True)
+    
+    # Add unique_id column for compatibility
+    df["unique_id"] = df["id"].astype(str)
+    
+    print(f"Loaded {len(df)} problems from: {df['dataset'].value_counts().to_dict()}")
+    return df
+
+
+def load_dataset_by_name(
+    name: str,
+    sample_size: int | None = None,
+) -> pd.DataFrame:
+    """
+    Load a single dataset by name.
+    
+    Args:
+        name: Dataset name (MATH-500, GSM8K, or Olympiad)
+        sample_size: Optional number of samples (for testing)
+    
+    Returns:
+        DataFrame with columns: unique_id, problem, solution
+    """
+    return load_eval_dataset(datasets=[name], sample_size=sample_size)
 @dataclass
 class EvalResult:
     """Results for a single dataset evaluation."""
@@ -26,10 +92,6 @@ class EvalResult:
     total_tokens: int
     results_df: pd.DataFrame
 
-
-# =============================================================================
-# Answer Extraction and Evaluation
-# =============================================================================
 
 def extract_boxed(s: str) -> str | None:
     """Extract answer from \\boxed{} notation."""
@@ -203,7 +265,7 @@ def evaluate_dataset(
     total_tokens = 0
     num_correct = 0
     
-    dataset_type = "gsm8k" if dataset_name == "gsm8k" else "math"
+    dataset_type = "gsm8k" if dataset_name.upper() == "GSM8K" else "math"
     
     for i, output in enumerate(outputs):
         generated_text = output.outputs[0].text
@@ -214,7 +276,7 @@ def evaluate_dataset(
         
         # Evaluate correctness
         is_correct = evaluate_answer(
-            df.iloc[i]["solution"],
+            str(df.iloc[i]["solution"]),
             generated_text,
             dataset_type
         )
@@ -247,7 +309,7 @@ def evaluate_dataset(
 
 def run_evaluation_pipeline(
     model_path: str,
-    datasets: list[str] = ["gsm8k", "olympiad", "amc"],
+    datasets: list[str] = ["MATH-500", "GSM8K", "Olympiad"],
     output_dir: str = "./eval_results",
     max_tokens: int = 4096,
     temperature: float = 0.0,
@@ -262,7 +324,7 @@ def run_evaluation_pipeline(
     
     Args:
         model_path: Path to model or HuggingFace model ID
-        datasets: List of dataset names to evaluate
+        datasets: List of dataset names to evaluate (MATH-500, GSM8K, Olympiad)
         output_dir: Directory to save results
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature (0 for greedy)
@@ -400,7 +462,7 @@ def save_summary(results: dict[str, EvalResult], output_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evaluate math reasoning models on GSM8K, Olympiad, and AMC datasets"
+        description="Evaluate math reasoning models on MATH-500, GSM8K, and Olympiad datasets"
     )
     
     parser.add_argument(
@@ -413,9 +475,9 @@ def main():
         "--datasets",
         type=str,
         nargs="+",
-        default=["gsm8k", "olympiad", "amc"],
-        choices=["gsm8k", "olympiad", "amc"],
-        help="Datasets to evaluate on"
+        default=["MATH-500", "GSM8K", "Olympiad"],
+        choices=["MATH-500", "GSM8K", "Olympiad", "all"],
+        help="Datasets to evaluate on (MATH-500, GSM8K, Olympiad, or 'all')"
     )
     parser.add_argument(
         "--output-dir",
@@ -467,9 +529,14 @@ def main():
     
     args = parser.parse_args()
     
+    # Handle 'all' option
+    datasets = args.datasets
+    if "all" in datasets:
+        datasets = AVAILABLE_DATASETS
+    
     run_evaluation_pipeline(
         model_path=args.model_path,
-        datasets=args.datasets,
+        datasets=datasets,
         output_dir=args.output_dir,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
