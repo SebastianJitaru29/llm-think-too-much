@@ -158,11 +158,6 @@ def evaluate_answer(expected: str, generated: str, dataset_type: str = "math") -
     
     return is_equiv(gen_val, exp_val)
 
-
-# =============================================================================
-# Prompt Creation
-# =============================================================================
-
 def create_eval_prompt(problem: str, use_cot: bool = True) -> str:
     """
     Create evaluation prompt for a math problem.
@@ -222,9 +217,6 @@ def create_prompts_batch(
     return prompts
 
 
-# =============================================================================
-# Model Evaluation
-# =============================================================================
 
 def evaluate_dataset(
     llm: LLM,
@@ -250,9 +242,8 @@ def evaluate_dataset(
     Returns:
         EvalResult with accuracy and token counts
     """
-    print(f"\n{'='*60}")
     print(f"Evaluating on {dataset_name} ({len(df)} problems)")
-    print(f"{'='*60}")
+    
     
     # Create prompts
     prompts = create_prompts_batch(df, tokenizer, use_cot, enable_thinking)
@@ -340,11 +331,9 @@ def run_evaluation_pipeline(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    print(f"\n{'#'*60}")
-    print(f"# Evaluation Pipeline")
-    print(f"# Model: {model_path}")
-    print(f"# Datasets: {datasets}")
-    print(f"{'#'*60}\n")
+    print(f"Evaluation Pipeline")
+    print(f"Model: {model_path}")
+    print(f"Datasets: {datasets}")
     
     # Initialize model
     print("Loading model...")
@@ -412,11 +401,7 @@ def run_evaluation_pipeline(
 
 def print_summary(results: dict[str, EvalResult]):
     """Print evaluation summary to console."""
-    print(f"\n{'='*70}")
-    print(f"{'EVALUATION SUMMARY':^70}")
-    print(f"{'='*70}")
     print(f"{'Dataset':<15} {'Accuracy':>12} {'Correct':>10} {'Total':>8} {'Avg Tokens':>12}")
-    print(f"{'-'*70}")
     
     total_correct = 0
     total_problems = 0
@@ -455,10 +440,6 @@ def save_summary(results: dict[str, EvalResult], output_path: Path):
     summary_df.to_csv(summary_file, index=False)
     print(f"Summary saved to {summary_file}")
 
-
-# =============================================================================
-# CLI
-# =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(

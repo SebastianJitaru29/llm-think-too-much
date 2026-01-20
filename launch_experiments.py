@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--data", required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--generated-dir", required=True)
-    parser.add_argument("--file-name", default="aime_results_long")
+    parser.add_argument("--file-name", required=True)
     args = parser.parse_args()
 
     print(f"Loading data from {args.data}...")
