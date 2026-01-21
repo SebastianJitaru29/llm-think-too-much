@@ -37,7 +37,7 @@ def main():
     print(f"Loading data from {args.data}...")
     df = pd.read_parquet(args.data)
     targets = np.linspace(start=100, stop=5000, num=20, endpoint=True, dtype=int)
-    df = df.sample(n=1, random_state=42).reset_index(drop=True)
+    #df = df.sample(n=1, random_state=42).reset_index(drop=True)
     expanded = []
     for _, row in df.iterrows():
         for tgt in targets:
@@ -51,7 +51,7 @@ def main():
             })
     
     expanded_df = pd.DataFrame(expanded)    
-    expanded_df = expanded_df.sort_values(by="id", ascending=True)
+    expanded_df = expanded_df.sort_values(by="target_think_tokens", ascending=True)
 
     os.makedirs(args.generated_dir, exist_ok=True)
     print("Loading tokenizer...")
