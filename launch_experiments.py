@@ -106,7 +106,7 @@ def main():
             "prompt": prompts[i],
             "solution_col": row["solution"],
             "extracted_solution": exp_val,
-            "generated_solution": gen_val,
+            "extracted_generated_solution": gen_val,
             "is_correct": bool(is_ok),
             "generated_think_text": think_texts[i],
             "generated_text": full_text,
