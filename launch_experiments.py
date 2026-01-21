@@ -11,6 +11,8 @@ def build_prompt(problem: str, target_think_tokens: int) -> str:
 def extract_boxed(s: str) -> str | None:
     if not s: return None
     m = re.search(r"\\boxed\{([^}]*)\}", s)
+    if not m:
+        m = re.search(r"\$([^$]*)\$", s)    
     return m.group(1).strip() if m else None
 
 def extract_think_text(full_text: str) -> str:
@@ -21,8 +23,8 @@ def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
     exp_val = extract_boxed(expected_answer)
     gen_val = extract_boxed(generated_answer)
     if exp_val is None or gen_val is None:
-        return False
-    return is_equiv(gen_val, exp_val)
+        return False, exp_val, gen_val
+    return is_equiv(gen_val, exp_val), exp_val, gen_val
 
 def main():
     parser = argparse.ArgumentParser()
@@ -35,22 +37,21 @@ def main():
     print(f"Loading data from {args.data}...")
     df = pd.read_parquet(args.data)
     targets = np.linspace(start=100, stop=5000, num=20, endpoint=True, dtype=int)
-    #df = df.sample(n=10, random_state=42).reset_index(drop=True)
+    df = df.sample(n=1, random_state=42).reset_index(drop=True)
     expanded = []
-    for qid, row in df.iterrows():
+    for _, row in df.iterrows():
         for tgt in targets:
             expanded.append({
-                "question_id": qid,
+                "id": row["id"],
+                "dataset": str(row["dataset"]),
+                "level": str(row["level"]),
                 "problem": str(row["problem"]),
                 "solution": str(row["solution"]),
                 "target_think_tokens": int(tgt),
             })
     
-    expanded_df = pd.DataFrame(expanded)
-
-    expanded_df["__original_index"] = range(len(expanded_df))
-    
-    expanded_df = expanded_df.sort_values(by="target_think_tokens", ascending=True)
+    expanded_df = pd.DataFrame(expanded)    
+    expanded_df = expanded_df.sort_values(by="id", ascending=True)
 
     os.makedirs(args.generated_dir, exist_ok=True)
     print("Loading tokenizer...")
@@ -96,25 +97,27 @@ def main():
     for i in range(len(expanded_df)):
         row = expanded_df.iloc[i]
         full_text = generated_texts[i]
-        is_ok = evaluate_answer(row["solution"], full_text)
+        is_ok, exp_val, gen_val = evaluate_answer(row["solution"], full_text)
 
         records.append({
-            "__original_index": row["__original_index"], # Keep track
-            "question_id": row["question_id"],
+            "id": row["id"],
+            "dataset": row["dataset"],
+            "level": row["level"],
             "prompt": prompts[i],
             "solution_col": row["solution"],
+            "extracted_solution": exp_val,
+            "generated_solution": gen_val,
+            "is_correct": bool(is_ok),
             "generated_think_text": think_texts[i],
             "generated_text": full_text,
             "target_think_tokens": row["target_think_tokens"],
             "generated_think_tokens": think_lengths[i],
-            "latency_sec": (t1 - t0) / len(prompts),
-            "is_correct": bool(is_ok),
+            "latency_sec": (t1 - t0) / len(prompts)
         })
 
     print("Restoring original dataset order...")
     final_df = pd.DataFrame(records)
-    final_df = final_df.sort_values(by="__original_index", ascending=True)
-    final_df = final_df.drop(columns=["__original_index"])
+    final_df = final_df.sort_values(by="id", ascending=True)
 
     out_path = os.path.join(args.generated_dir, f"{args.file_name}.parquet")
     final_df.to_parquet(out_path, index=False)
