@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --mem=64GB
-#SBATCH --time=20:00:00
+#SBATCH --time=24:00:00
 #SBATCH --job-name=eval
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1
