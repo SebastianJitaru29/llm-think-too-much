@@ -302,7 +302,7 @@ def evaluate_dataset(
 
 def run_evaluation_pipeline(
     model_path: str,
-    datasets: list[str] = ["MATH-500", "GSM8K", "Olympiad"],
+    datasets: list[str] = ["math-500", "gsm8k", "olympiad"],
     output_dir: str = "./eval_results",
     max_tokens: int = 4096,
     temperature: float = 0.0,
@@ -317,7 +317,7 @@ def run_evaluation_pipeline(
     
     Args:
         model_path: Path to model or HuggingFace model ID
-        datasets: List of dataset names to evaluate (MATH-500, GSM8K, Olympiad)
+        datasets: List of dataset names to evaluate (math-500, gsm8k, olympiad)
         output_dir: Directory to save results
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature (0 for greedy)
