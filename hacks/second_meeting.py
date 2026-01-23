@@ -27,6 +27,7 @@ e["problem"] = e["problem"] + " Let’s think step by step inside and output the
 
 
 df_test = pd.concat((df_test_aligned, e), ignore_index=True)
+df_test["id"] = df_test["id"].astype("string")
 df_test.to_parquet("../data/actual_test.parquet", index=False)
 
 
