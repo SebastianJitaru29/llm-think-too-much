@@ -16,19 +16,17 @@ def load_df(train: bool = True) -> pd.DataFrame:
     assert train
 
     label = "train" if train else "test"
-    path =  Path(__file__).parent.parent / "data"
+    path = Path(__file__).parent.parent / "data"
 
-    df_math = pd.read_parquet(path / f"{label}_math.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct'])
-    df_aime = pd.read_parquet(path / f"{label}_aime.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct'])
+    df = pd.read_parquet(path / f"{label}.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct'])
     
-    return pd.concat((df_math, df_aime), ignore_index=True)
-
+    return df
 
 def create_regressor_dataset(h: np.ndarray, h_ids: np.ndarray, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
 
-    q = df.drop_duplicates(["question_id", "target_think_tokens"], keep="first")
-    q = q.rename(columns={"generated_think_tokens": "actual_think_tokens"})
 
+
+    q = df.drop_duplicates(["question_id", "target_think_tokens"], keep="first")
     bins = np.sort(q["target_think_tokens"].unique())
 
     correct = q[["is_correct", "target_think_tokens", "question_id"]].copy()
@@ -136,23 +134,16 @@ def batch_dataset(x: np.ndarray, y: np.ndarray, batch: int, shuffle: bool = Fals
 
 def load_hidden_states() -> tuple[np.ndarray, np.ndarray]:
     
-    h_math = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_math.npy")
-    h_math_ids = np.arange(h_math.shape[0])
+    h = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_train.npy")
+    h_ids = pd.read_parquet(Path(__file__).parent.parent  / "data" / "actual_train.parquet", columns=["id"])["id"].to_numpy()
 
-    h_aim = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_aime.npy")
-    temp = pd.read_parquet(Path(__file__).parent.parent / "data" / "aime.parquet")
-    h_aim_ids = np.arange(h_aim.shape[0])
-
-    assert h_aim.shape[0] == temp.shape[0], "Aime mismatch"
-
-    return np.concat((h_math, h_aim), axis=0), np.concat((h_math_ids, h_aim_ids))
+    return h, h_ids
     
 
     
 def get_dataset(train: bool = True) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
     df = load_df(train)
     h, h_ids = load_hidden_states()
-
     return create_regressor_dataset(h, h_ids, df)
 
 
