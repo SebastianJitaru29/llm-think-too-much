@@ -15,8 +15,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from math_equivalence import is_equiv
 
-EVAL_DATASET_PATH = Path(__file__).parent.parent / "data" / "processing" / "raw" / "eval_dataset.parquet"
-AVAILABLE_DATASETS = ["MATH-500", "GSM8K", "Olympiad"]
+EVAL_DATASET_PATH = Path(__file__).parent.parent / "data" / "raw" / "eval_data.parquet"
+AVAILABLE_DATASETS = ["math-500", "gsm8k", "olympiad", "amc", ]
 
 
 def load_eval_dataset(
@@ -28,7 +28,7 @@ def load_eval_dataset(
     
     Args:
         datasets: List of dataset names to load. If None, loads all datasets.
-                  Available: MATH-500, GSM8K, Olympiad
+                  Available: math-500, gsm8k, olympiad, amc
         sample_size: Optional number of samples per dataset (for testing)
     
     Returns:
@@ -74,7 +74,7 @@ def load_dataset_by_name(
     Load a single dataset by name.
     
     Args:
-        name: Dataset name (MATH-500, GSM8K, or Olympiad)
+        name: Dataset name (math-500, gsm8k, or olympiad)
         sample_size: Optional number of samples (for testing)
     
     Returns:
@@ -156,7 +156,7 @@ def evaluate_answer(expected: str, generated: str, dataset_type: str = "math") -
     if exp_val is None or gen_val is None:
         return False
     
-    return is_equiv(gen_val, exp_val)
+    return is_equiv(gen_val, exp_val), exp_val, gen_val
 
 def create_eval_prompt(problem: str, use_cot: bool = True) -> str:
     """
@@ -266,7 +266,7 @@ def evaluate_dataset(
         total_tokens += token_count
         
         # Evaluate correctness
-        is_correct = evaluate_answer(
+        is_correct, expected_value, generated_value = evaluate_answer(
             str(df.iloc[i]["solution"]),
             generated_text,
             dataset_type
@@ -279,6 +279,8 @@ def evaluate_dataset(
             "problem": df.iloc[i]["problem"],
             "solution": df.iloc[i]["solution"],
             "generated": generated_text,
+            "expected_value": expected_value,
+            "generated_value": generated_value,
             "token_count": token_count,
             "is_correct": is_correct
         })
@@ -443,7 +445,7 @@ def save_summary(results: dict[str, EvalResult], output_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evaluate math reasoning models on MATH-500, GSM8K, and Olympiad datasets"
+        description="Evaluate math reasoning models on math-500, gsm8k, and olympiad datasets"
     )
     
     parser.add_argument(
@@ -456,9 +458,9 @@ def main():
         "--datasets",
         type=str,
         nargs="+",
-        default=["MATH-500", "GSM8K", "Olympiad"],
-        choices=["MATH-500", "GSM8K", "Olympiad", "all"],
-        help="Datasets to evaluate on (MATH-500, GSM8K, Olympiad, or 'all')"
+        default=["math-500", "gsm8k", "olympiad"],
+        choices=["math-500", "gsm8k", "olympiad", "all"],
+        help="Datasets to evaluate on (math-500, gsm8k, olympiad, or 'all')"
     )
     parser.add_argument(
         "--output-dir",
