@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--file-name", default="static_regressor_results")
     args = parser.parse_args()
 
-    df = pd.read_parquet("./data/test_all.parquet")
+    df = pd.read_parquet("./data/actual_test.parquet")
     targets = np.load("./data/test_target_tokens.npy")
     
     if len(df) != len(targets):
@@ -57,7 +57,7 @@ def main():
         max_model_len=32768,    
     )
 
-    sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
+    sampling_params = SamplingParams(max_tokens=8_000, temperature=0, skip_special_tokens=False)
 
     prompts = []
     for i in range(len(df)):
@@ -84,7 +84,12 @@ def main():
     for i in range(len(df)):
         row = df.iloc[i]
         full_text = generated_texts[i]
-        is_ok = evaluate_answer(row["solution"], full_text)
+
+        try:
+            is_ok = evaluate_answer(row["solution"], full_text)
+        except Exception as e:
+            print(f"Error during eval answer {e}")
+            is_ok = False
 
         records.append({
             "question_id": i,

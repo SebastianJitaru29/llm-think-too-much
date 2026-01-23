@@ -20,15 +20,16 @@ def predict_batch(network: Regressor, hidden: jax.Array) -> tuple[jax.Array, jax
     return bucket_i, p
 
 def main():
+    h_path = Path(__file__).parent / "innit_hidden_states"
     data_path = Path(__file__).parent.parent / "data"
     
-    h_path = data_path / "hidden_states_test.npy"
+    h_path = h_path / "hidden_states_test.npy"
     h = jnp.squeeze(jnp.load(h_path))
     
     network = Regressor.load_network()
     
     df_aime = pd.read_parquet(
-        data_path / "test_aime.parquet", 
+        data_path / "train.parquet", 
         columns=['target_think_tokens']
     )
     bins = np.sort(df_aime["target_think_tokens"].unique())
