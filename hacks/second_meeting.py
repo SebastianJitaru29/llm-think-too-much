@@ -26,7 +26,7 @@ e = e[e["dataset"] != "math-500"]
 e["problem"] = e["problem"] + " Let’s think step by step inside and output the final answer within boxed{{}}."
 
 
-df_test = pd.concat((df_test, e), ignore_index=True)
+df_test = pd.concat((df_test_aligned, e), ignore_index=True)
 df_test.to_parquet("../data/actual_test.parquet", index=False)
 
 
