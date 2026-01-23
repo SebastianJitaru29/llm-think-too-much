@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --mem=32GB
-#SBATCH --time=0:15:00
+#SBATCH --time=1:00:00
 #SBATCH --job-name=static_regressor
 #SBATCH --partition=gpu
 #SBATCH --gpus-per-node=a100:1
