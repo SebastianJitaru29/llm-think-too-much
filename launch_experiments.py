@@ -9,11 +9,28 @@ def build_prompt(problem: str, target_think_tokens: int) -> str:
     return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens. <think>"
 
 def extract_boxed(s: str) -> str | None:
-    if not s: return None
+    if not s:
+        return None
+    # MATH & AIME
     m = re.search(r"\\boxed\{([^}]*)\}", s)
-    if not m:
-        m = re.search(r"\$([^$]*)\$", s)    
-    return m.group(1).strip() if m else None
+    if m:
+        return m.group(1).strip()
+    # GSM8K
+    matches = re.findall(
+        r"(?m)^[ \t]*####[ \t]*([^\n\r#]+?)[ \t]*$",
+        s
+    )
+    if matches:
+        return matches[-1].strip()
+    # Olympiad
+    m = re.search(r"\$([^$]*)\$", s)
+    if m:
+        return m.group(1).strip()
+    # AMC 
+    m = re.search(r"(?m)^[ \t]*([+-]?\d+(?:\.\d+)?)[ \t]*$", s)
+    if m:
+        return m.group(1)
+    return None
 
 def extract_think_text(full_text: str) -> str:
     match = re.search(r"<think>(.*?)</think>", full_text, flags=re.DOTALL)
