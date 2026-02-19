@@ -19,3 +19,4 @@ hidden_aime_dataset/*
 /dynamic_regressor_results/*
 .llmvenv/
 client_secrets.json
+.venv
