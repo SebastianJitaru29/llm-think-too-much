@@ -7,9 +7,12 @@ import pandas as pd
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 from math_equivalence import is_equiv
+from pathlib import Path
 
+MODEL = "l3lab/L1-Qwen3-8B-Max"
+OUTPUT_PATH = Path(__file__).parent / "results.parquet"
 def build_prompt(problem: str, target_think_tokens: int) -> str:
-    return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens. <think>"
+    return f"{problem} Think for {target_think_tokens} tokens. <think>"
 
 def extract_boxed(s: str) -> str | None:
     if not s: return None
@@ -34,23 +37,27 @@ def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
     return is_equiv(gen_val, exp_val)
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", required=True)
-    parser.add_argument("--generated-dir", required=True)
-    parser.add_argument("--file-name", default="static_regressor_results")
-    args = parser.parse_args()
-
-    df = pd.read_parquet("./data/test_all.parquet")
-    targets = np.load("./data/test_target_tokens.npy")
+    df = pd.read_parquet(Path(__file__).parent / "dataset_splitting" / "test.parquet")#"./data/test_all.parquet")
+    targets = np.load(Path(__file__).parent / "regressor" / "test_target_tokens.npy", allow_pickle=True).item()#"./data/test_target_tokens.npy")
     
-    if len(df) != len(targets):
-        raise ValueError(f"Data length mismatch: DataFrame has {len(df)} rows, targets has {len(targets)} elements.")
+    df =  df.groupby("question_id", as_index=False).first()
+    mask = np.isin(df['question_id'], targets['ids'])
+    df = df[mask]
+    if len(df) != len(targets['ids']):
+        raise ValueError(f"Data length mismatch: DataFrame has {len(df)} rows, targets has {len(targets['ids'])} elements.")
+    
+    targets = targets['target']
 
-    os.makedirs(args.generated_dir, exist_ok=True)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    prompts = []
+    for i in range(len(df)):
+        prompts.append(build_prompt(df.iloc[i]["prompt"], targets[i]))
+
+
+    #os.makedirs(args.generated_dir, exist_ok=True)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
     
     llm = LLM(
-        model=args.model_path,
+        model=MODEL,
         dtype="float16", 
         trust_remote_code=True,
         tensor_parallel_size=1, 
@@ -58,10 +65,6 @@ def main():
     )
 
     sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
-
-    prompts = []
-    for i in range(len(df)):
-        prompts.append(build_prompt(df.iloc[i]["problem"], targets[i]))
 
     t0 = time.perf_counter()
     outputs = llm.generate(prompts, sampling_params)
@@ -84,12 +87,12 @@ def main():
     for i in range(len(df)):
         row = df.iloc[i]
         full_text = generated_texts[i]
-        is_ok = evaluate_answer(row["solution"], full_text)
+        is_ok = evaluate_answer(row["solution_col"], full_text)
 
         records.append({
-            "question_id": i,
+            "question_id": row['question_id'],
             "prompt": prompts[i],
-            "solution": row["solution"],
+            "solution": row["solution_col"],
             "generated_think_text": think_texts[i],
             "generated_text": full_text,
             "target_think_tokens": int(targets[i]),
@@ -99,7 +102,7 @@ def main():
         })
 
     final_df = pd.DataFrame(records)
-    out_path = os.path.join(args.generated_dir, f"{args.file_name}.parquet")
+    out_path = os.path.join(OUTPUT_PATH)
     final_df.to_parquet(out_path, index=False)
 
 if __name__ == "__main__":

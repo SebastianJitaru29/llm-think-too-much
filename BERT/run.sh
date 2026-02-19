@@ -1,0 +1,1 @@
+python3 run_bert.py --data '/home/s3799042/Data/NLP/Train/data/math_results.parquet' --model-path '/scratch/s3799042/bert-base-uncased' --output '/scratch/s3799042/results_nlp' --batch-size 8

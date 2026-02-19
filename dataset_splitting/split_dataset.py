@@ -3,47 +3,45 @@ import os
 import csv
 from pathlib import Path
 import re
+from datasets import load_dataset
 
-MATH_DATASET_PATHS = "/home3/s3799042/data_nlp/MATH"
-AIME_DATASET_PATH = "/home3/s3799042/data_nlp/AIMEE"
+MATH1_DATASET_PATH = Path(__file__).parent.parent / "data" / "math1_results_long.parquet"
+MATH2_DATASET_PATH = Path(__file__).parent.parent / "data" / "math2_results_long.parquet" #/"/home3/s3799042/data_nlp/MATH"
+AIME_DATASET_PATH = Path(__file__).parent.parent / "data" / "aime_results_long_with_aime_id.parquet" #/home3/s3799042/data_nlp/AIMEE"
 
-def get_generated_dataset(data_folder):
-    generated_dataset = []
-    for root, dirs, files in os.walk(data_folder):
-        for dir in dirs:
-            if "generated" not in dir:
-                continue
-            path_folder = data_folder + "/" + dir
-            for file in os.listdir(path_folder):
-                filepath = os.path.join(path_folder, file)
-                with open(filepath, newline='', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        generated_dataset.append(row)
-    
-    return generated_dataset            
+KEY = 42
 
+TEST_SIZE_AIME = 250
+
+def split_math500(generated_df, math500_df):
+    match_mask = pd.Series(False, index=generated_df.index)
+
+    for problem in math500_df["problem"]:
+        match_mask |= generated_df["prompt"].str.contains(
+            re.escape(problem),
+            regex=True,
+            na=False
+        )
+
+    train_df = generated_df.loc[~match_mask].copy()
+    test_df = generated_df.loc[match_mask].copy()
+    print(f"moved {len(test_df)} rows to test")
+    return train_df, test_df
 
 def remove_think_string(df):
-    for _, row in df.iterrows():
-        row['prompt'] = re.sub(r" Think for \d+ tokens\. \<think\>", "", row['prompt'])
-        row['prompt'] = re.sub(r" Think for \d+ tokens\.", "", row['prompt'])
+    df["prompt"] = (
+        df["prompt"]
+        .str.replace(r" Think for \d+ tokens\. <think>", "", regex=True)
+        .str.replace(r" Think for \d+ tokens\.", "", regex=True)
+    )
+    return df
 
-def split_math_dataset(math_dataset_paths, test_size_per_level=20, random_state=42):
-    # load original df (index is the unique question id)
+
+def add_level(generated_df):
     df = pd.read_parquet(
         "hf://datasets/qwedsacf/competition_math/data/train-00000-of-00001-7320a6f3aba8ebd2.parquet"
     )
-    # keep only needed column and turn index into a column named question_id
     df = df[["level"]].reset_index().rename(columns={"index": "question_id"})
-
-    # read and concat generated datasets
-    #gen_dfs = []
-    gen = get_generated_dataset(math_dataset_paths)
-    generated_df = pd.DataFrame(gen)
-
-    #generated_df = pd.concat(gen_dfs, ignore_index=True)
-    remove_think_string(generated_df)
 
     # Ensure question_id types match. Cast both to string to be safe.
     df["question_id"] = df["question_id"].astype(str)
@@ -52,64 +50,53 @@ def split_math_dataset(math_dataset_paths, test_size_per_level=20, random_state=
     # Merge level onto generated answers (left join on generated_df)
     merged = generated_df.merge(df, on="question_id", how="left", validate="m:1")
 
-    # Sanity check: any missing levels?
-    missing_levels = merged["level"].isna().sum()
-    if missing_levels:
-        raise ValueError(f"{missing_levels} generated rows have no matching question in df")
+    return merged
 
-    # choose unique questions per level for the test set
-    question_levels = merged[["question_id", "level"]].drop_duplicates()
+def split_math_dataset(generated_df):
+    generated_df = add_level(generated_df)
+    generated_df = remove_think_string(generated_df)
 
-    def sample_per_level(grp):
-        n = min(test_size_per_level, len(grp))
-        return grp.sample(n=n, random_state=random_state)
+    dataset = load_dataset("HuggingFaceH4/MATH-500")
+    math500_df = dataset['test'].to_pandas()
+    train, test= split_math500(generated_df, math500_df)
 
-    test_questions = question_levels.groupby("level", group_keys=False).apply(sample_per_level)
-    test_qids = set(test_questions["question_id"].tolist())
+    return train, test
 
-    # assign split so all answers for a question go to same split
-    merged["split"] = merged["question_id"].apply(lambda q: "test" if q in test_qids else "train")
+def split_aimee(aime_df, test_size = 250):
+    aime_df["level"] = "aime"
+    aime_df = remove_think_string(aime_df)
 
-    train_df = merged[merged["split"] == "train"].drop(columns=["split"])
-    test_df  = merged[merged["split"] == "test"].drop(columns=["split"])
+    unique_question_ids =  aime_df["question_id"].drop_duplicates()
+    test_question_ids = unique_question_ids.sample(n=test_size, random_state=KEY).tolist()
 
-    return train_df, test_df
+    aime_df["split"] = aime_df["question_id"].apply(lambda q: "test" if q in test_question_ids else "train")
 
-def split_aimee(path_aimee, test_size = 20, random_state = 42):
-    gen = get_generated_dataset(path_aimee)
-    gen_df = pd.DataFrame(gen)
-    gen_df["level"] = "aimee"
-    remove_think_string(gen_df)
-
-    unique_question_ids =  gen_df["question_id"].drop_duplicates()
-    test_question_ids = unique_question_ids.sample(n=test_size, random_state=random_state).tolist()
-
-    gen_df["split"] = gen_df["question_id"].apply(lambda q: "test" if q in test_question_ids else "train")
-
-    train_df = gen_df[gen_df["split"] == "train"].drop(columns=["split"])
-    test_df  = gen_df[gen_df["split"] == "test"].drop(columns=["split"])
+    train_df = aime_df[aime_df["split"] == "train"].drop(columns=["split"])
+    test_df  = aime_df[aime_df["split"] == "test"].drop(columns=["split"])
 
     return train_df, test_df
 
 # Creates dataset with columns 
 # ['question_id', 'prompt', 'solution_col', 'generated_think_text', 'generated_text', 'target_think_tokens', 
 # 'generated_think_tokens', 'latency_sec', 'is_correct', 'level']
-def split_datasets(math_dataset_paths, aimee_dataset_path):
-    train_df_math, test_df_math = split_math_dataset(math_dataset_paths)
-    train_df_aimee, test_df_aimee = split_aimee(aimee_dataset_path)
+def split_datasets(math1_dataset_path, math2_dataset_path, aimee_dataset_path):
+    math1 = pd.read_parquet(math1_dataset_path)
+    math2 = pd.read_parquet(math2_dataset_path)
+
+    combined_math = pd.concat([math1, math2], ignore_index=True)
+
+    aime = pd.read_parquet(aimee_dataset_path)
+
+    train_df_math, test_df_math = split_math_dataset(combined_math)
+
+
+
+    train_df_aimee, test_df_aimee = split_aimee(aime, TEST_SIZE_AIME)
 
     train_df = pd.concat([train_df_math, train_df_aimee], ignore_index=True)
     test_df = pd.concat([test_df_math, test_df_aimee], ignore_index=True)
 
-    org_len_train = len(train_df)
-    org_len_test =  len(test_df)
-
-    train_df = train_df.drop_duplicates(subset=['question_id', 'target_think_tokens'], keep='first')
-    test_df = test_df.drop_duplicates(subset=['question_id', 'target_think_tokens'], keep='first')
-
-    print(f"Filtered train: {org_len_train - len(train_df)} test: {org_len_test - len(test_df)}")
-
     train_df.to_parquet(Path(__file__).parent / "train.parquet", index=False)
     test_df.to_parquet(Path(__file__).parent / "test.parquet", index=False)
 
-split_datasets(MATH_DATASET_PATHS, AIME_DATASET_PATH)
+split_datasets(MATH1_DATASET_PATH, MATH2_DATASET_PATH, AIME_DATASET_PATH)
