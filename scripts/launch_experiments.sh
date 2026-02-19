@@ -5,7 +5,7 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=4 
 #SBATCH --output=logs/train_%j.out
 #SBATCH --error=logs/train_%j.err
 echo "Job started on $(hostname) at $(date)"
