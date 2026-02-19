@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd 
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
-from math_equivalence import is_equiv
+from data.processing.math_equivalence import is_equiv
 
 def build_prompt(problem: str, target_think_tokens: int) -> str:
     return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens. <think>"

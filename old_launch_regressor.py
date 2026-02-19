@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 from tqdm.auto import tqdm
 import shutil
-from math_equivalence import is_equiv
+from data.processing.math_equivalence import is_equiv
 
 from regressor.architecture import Regressor
 from launch_experiments import (
