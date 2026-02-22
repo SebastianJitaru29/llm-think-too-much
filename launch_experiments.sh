@@ -15,6 +15,6 @@ source /home4/s6019595/.llmvenv/bin/activate
 srun python3 launch_experiments.py \
   --data ./data/raw/train_data.parquet \
   --model-path /scratch/s6019595/models/L1-Qwen3-8B-Max/ \
-  --generated-dir /scratch/s6019595 \
+  --generated-dir ./data/processed \
   --file-name train
 echo "Job ended at $(date)"
