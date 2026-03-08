@@ -1,2 +1,0 @@
-dataset,accuracy,num_correct,num_total,avg_tokens,total_tokens
-gsm8k,1.0,1,1,1112.0,1112

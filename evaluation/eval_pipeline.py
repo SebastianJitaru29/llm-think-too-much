@@ -9,31 +9,31 @@ import pandas as pd
 import torch
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
+import numpy as np
 
 # Add parent directory to path for imports
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from math_equivalence import is_equiv
+from data.processing.math_equivalence import is_equiv
 
 EVAL_DATASET_PATH = Path(__file__).parent.parent / "data" / "raw" / "eval_data.parquet"
 AVAILABLE_DATASETS = ["math-500", "gsm8k", "olympiad", "amc", ]
+@dataclass
+class EvalResult:
+    """Results for a single dataset evaluation."""
+    dataset_name: str
+    accuracy: float
+    num_correct: int
+    num_total: int
+    avg_tokens: float
+    total_tokens: int
+    results_df: pd.DataFrame
 
 
 def load_eval_dataset(
     datasets: list[str] | None = None,
     sample_size: int | None = None,
 ) -> pd.DataFrame:
-    """
-    Load evaluation dataset from local parquet file.
-    
-    Args:
-        datasets: List of dataset names to load. If None, loads all datasets.
-                  Available: math-500, gsm8k, olympiad, amc
-        sample_size: Optional number of samples per dataset (for testing)
-    
-    Returns:
-        DataFrame with columns: id, dataset, problem, solution, level
-    """
     if not EVAL_DATASET_PATH.exists():
         raise FileNotFoundError(
             f"Evaluation dataset not found at {EVAL_DATASET_PATH}. "
@@ -41,17 +41,7 @@ def load_eval_dataset(
         )
     
     df = pd.read_parquet(EVAL_DATASET_PATH)
-    
-    # Filter by dataset names if specified
-    if datasets is not None:
-        # Validate dataset names
-        invalid = set(datasets) - set(AVAILABLE_DATASETS)
-        if invalid:
-            raise ValueError(
-                f"Unknown dataset(s): {invalid}. "
-                f"Available: {AVAILABLE_DATASETS}"
-            )
-        df = df[df["dataset"].isin(datasets)]
+    df = df[df["dataset"].isin(datasets)]
     
     # Apply sample size per dataset
     if sample_size is not None:
@@ -65,158 +55,39 @@ def load_eval_dataset(
     print(f"Loaded {len(df)} problems from: {df['dataset'].value_counts().to_dict()}")
     return df
 
-
-def load_dataset_by_name(
-    name: str,
-    sample_size: int | None = None,
-) -> pd.DataFrame:
-    """
-    Load a single dataset by name.
-    
-    Args:
-        name: Dataset name (math-500, gsm8k, or olympiad)
-        sample_size: Optional number of samples (for testing)
-    
-    Returns:
-        DataFrame with columns: unique_id, problem, solution
-    """
-    return load_eval_dataset(datasets=[name], sample_size=sample_size)
-@dataclass
-class EvalResult:
-    """Results for a single dataset evaluation."""
-    dataset_name: str
-    accuracy: float
-    num_correct: int
-    num_total: int
-    avg_tokens: float
-    total_tokens: int
-    results_df: pd.DataFrame
-
-
 def extract_boxed(s: str) -> str | None:
-    """Extract answer from \\boxed{} notation."""
     if not s:
         return None
-    # Handle nested braces by finding the matching closing brace
-    match = re.search(r"\\boxed\{", s)
-    if not match:
-        return None
-    
-    start = match.end()
-    depth = 1
-    i = start
-    while i < len(s) and depth > 0:
-        if s[i] == '{':
-            depth += 1
-        elif s[i] == '}':
-            depth -= 1
-        i += 1
-    
-    if depth == 0:
-        return s[start:i-1].strip()
+    # MATH & AIME
+    m = re.search(r"\\boxed\{([^}]*)\}", s)
+    if m:
+        return m.group(1).strip()
+    # GSM8K
+    matches = re.findall(
+        r"(?m)^[ \t]*####[ \t]*([^\n\r#]+?)[ \t]*$",
+        s
+    )
+    if matches:
+        return matches[-1].strip()
+    # Olympiad
+    m = re.search(r"\$([^$]*)\$", s)
+    if m:
+        return m.group(1).strip()
+    # AMC 
+    m = re.search(r"(?m)^[ \t]*([+-]?\d+(?:\.\d+)?)[ \t]*$", s)
+    if m:
+        return m.group(1)
     return None
 
-
-def extract_numeric_answer(s: str) -> str | None:
-    """Extract numeric answer from text (fallback for GSM8K format)."""
-    if not s:
-        return None
-    # Look for #### pattern (GSM8K format)
-    match = re.search(r"####\s*(.+?)(?:\n|$)", s)
-    if match:
-        return match.group(1).strip()
-    return None
-
-
-def evaluate_answer(expected: str, generated: str, dataset_type: str = "math") -> bool:
-    """
-    Compare expected and generated answers.
-    
-    Args:
-        expected: Ground truth answer
-        generated: Model generated answer
-        dataset_type: Type of dataset for answer extraction strategy
-    """
-    # Extract generated answer from boxed notation
-    gen_val = extract_boxed(generated)
-    
-    # Extract expected answer based on dataset type
-    if dataset_type == "gsm8k":
-        exp_val = extract_numeric_answer(expected)
-        if exp_val is None:
-            exp_val = expected.strip()
-        # For GSM8K, if no boxed answer, try to find numeric answer
-        if gen_val is None:
-            gen_val = extract_numeric_answer(generated)
-    else:
-        exp_val = extract_boxed(expected)
-        if exp_val is None:
-            exp_val = str(expected).strip()
-    
+def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
+    exp_val = extract_boxed(expected_answer)
+    gen_val = extract_boxed(generated_answer)
     if exp_val is None or gen_val is None:
-        return False
-    
+        return False, exp_val, gen_val
     return is_equiv(gen_val, exp_val), exp_val, gen_val
 
-def create_eval_prompt(problem: str, use_cot: bool = True) -> str:
-    """
-    Create evaluation prompt for a math problem.
-    
-    Args:
-        problem: The math problem text
-        use_cot: Whether to use chain-of-thought prompting
-    """
-    if use_cot:
-        return f"{problem}\n\nLet's think step by step and output the final answer within \\boxed{{}}."
-    else:
-        return f"{problem}\n\nOutput the final answer within \\boxed{{}}."
-
-
-def create_prompts_batch(
-    df: pd.DataFrame,
-    tokenizer,
-    use_cot: bool = True,
-    enable_thinking: bool = False
-) -> list[str]:
-    """
-    Create prompts for a batch of problems.
-    
-    Args:
-        df: DataFrame with 'problem' column
-        tokenizer: Model tokenizer
-        use_cot: Whether to use chain-of-thought
-        enable_thinking: Whether to enable thinking mode (for Qwen3 etc.)
-    
-    Returns:
-        List of formatted prompts
-    """
-    prompts = []
-    
-    for _, row in df.iterrows():
-        content = create_eval_prompt(row["problem"], use_cot)
-        messages = [{"role": "user", "content": content}]
-        
-        # Try to apply chat template with thinking enabled
-        try:
-            prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=enable_thinking
-            )
-        except TypeError:
-            # Fallback if enable_thinking not supported
-            prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-        
-        prompts.append(prompt)
-    
-    return prompts
-
-
+def build_prompt(problem: str) -> str:
+    return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}."
 
 def evaluate_dataset(
     llm: LLM,
@@ -224,8 +95,6 @@ def evaluate_dataset(
     df: pd.DataFrame,
     dataset_name: str,
     sampling_params: SamplingParams,
-    use_cot: bool = True,
-    enable_thinking: bool = False
 ) -> EvalResult:
     """
     Evaluate a model on a single dataset.
@@ -237,17 +106,17 @@ def evaluate_dataset(
         dataset_name: Name of the dataset
         sampling_params: vLLM sampling parameters
         use_cot: Use chain-of-thought prompting
-        enable_thinking: Enable thinking mode
     
     Returns:
         EvalResult with accuracy and token counts
     """
     print(f"Evaluating on {dataset_name} ({len(df)} problems)")
-    
-    
+        
     # Create prompts
-    prompts = create_prompts_batch(df, tokenizer, use_cot, enable_thinking)
-    
+    prompts = [
+        build_prompt(row["problem"]) 
+        for _, row in df.iterrows()
+    ]    
     # Generate responses
     outputs = llm.generate(prompts, sampling_params)
     
@@ -255,9 +124,7 @@ def evaluate_dataset(
     results = []
     total_tokens = 0
     num_correct = 0
-    
-    dataset_type = "gsm8k" if dataset_name.upper() == "GSM8K" else "math"
-    
+        
     for i, output in enumerate(outputs):
         generated_text = output.outputs[0].text
         
@@ -269,7 +136,6 @@ def evaluate_dataset(
         is_correct, expected_value, generated_value = evaluate_answer(
             str(df.iloc[i]["solution"]),
             generated_text,
-            dataset_type
         )
         if is_correct:
             num_correct += 1
@@ -304,32 +170,7 @@ def run_evaluation_pipeline(
     model_path: str,
     datasets: list[str] = ["math-500", "gsm8k", "olympiad"],
     output_dir: str = "./eval_results",
-    max_tokens: int = 4096,
-    temperature: float = 0.0,
-    sample_size: int | None = None,
-    use_cot: bool = True,
-    enable_thinking: bool = False,
-    dtype: str = "bfloat16",
-    max_model_len: int = 8192,
 ) -> dict[str, EvalResult]:
-    """
-    Run the full evaluation pipeline on multiple datasets.
-    
-    Args:
-        model_path: Path to model or HuggingFace model ID
-        datasets: List of dataset names to evaluate (math-500, gsm8k, olympiad)
-        output_dir: Directory to save results
-        max_tokens: Maximum tokens to generate
-        temperature: Sampling temperature (0 for greedy)
-        sample_size: Optional sample size per dataset
-        use_cot: Use chain-of-thought prompting
-        enable_thinking: Enable thinking mode
-        dtype: Model data type
-        max_model_len: Maximum model context length
-    
-    Returns:
-        Dictionary mapping dataset names to EvalResults
-    """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
@@ -341,52 +182,40 @@ def run_evaluation_pipeline(
     print("Loading model...")
     llm = LLM(
         model=model_path,
-        dtype=dtype,
-        max_model_len=max_model_len,
+        dtype="bfloat16", #On V100, use float16
         trust_remote_code=True,
+        tensor_parallel_size=1, 
+        max_model_len=32768,    
+        #gpu_memory_utilization=0.8,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     
-    sampling_params = SamplingParams(
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    
+    sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
     # Evaluate each dataset
     results: dict[str, EvalResult] = {}
     
     for dataset_name in datasets:
-        try:
-            # Load dataset
-            df = load_dataset_by_name(dataset_name, sample_size=sample_size)
+        df =load_eval_dataset(datasets=[dataset_name])
+        if len(df) == 0:
+            print(f"Warning: {dataset_name} is empty, skipping...")
+            continue
+        
+        # Evaluate
+        result = evaluate_dataset(
+            llm=llm,
+            tokenizer=tokenizer,
+            df=df,
+            dataset_name=dataset_name,
+            sampling_params=sampling_params,
+        )
+        
+        results[dataset_name] = result
+        
+        # Save individual results
+        result_file = output_path / f"{dataset_name}_results.parquet"
+        result.results_df.to_parquet(result_file)
+        print(f"Saved results to {result_file}")
             
-            if len(df) == 0:
-                print(f"Warning: {dataset_name} is empty, skipping...")
-                continue
-            
-            # Evaluate
-            result = evaluate_dataset(
-                llm=llm,
-                tokenizer=tokenizer,
-                df=df,
-                dataset_name=dataset_name,
-                sampling_params=sampling_params,
-                use_cot=use_cot,
-                enable_thinking=enable_thinking
-            )
-            
-            results[dataset_name] = result
-            
-            # Save individual results
-            result_file = output_path / f"{dataset_name}_results.parquet"
-            result.results_df.to_parquet(result_file)
-            print(f"Saved results to {result_file}")
-            
-        except Exception as e:
-            print(f"Error evaluating {dataset_name}: {e}")
-            import traceback
-            traceback.print_exc()
-    
     # Clean up
     del llm
     gc.collect()
@@ -468,47 +297,6 @@ def main():
         default="./eval_results",
         help="Directory to save results"
     )
-    parser.add_argument(
-        "--max-tokens",
-        type=int,
-        default=4096,
-        help="Maximum tokens to generate"
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.0,
-        help="Sampling temperature (0 for greedy)"
-    )
-    parser.add_argument(
-        "--sample-size",
-        type=int,
-        default=None,
-        help="Sample size per dataset (for testing)"
-    )
-    parser.add_argument(
-        "--no-cot",
-        action="store_true",
-        help="Disable chain-of-thought prompting"
-    )
-    parser.add_argument(
-        "--enable-thinking",
-        action="store_true",
-        help="Enable thinking mode (for Qwen3 etc.)"
-    )
-    parser.add_argument(
-        "--dtype",
-        type=str,
-        default="bfloat16",
-        choices=["bfloat16", "float16", "float32"],
-        help="Model data type"
-    )
-    parser.add_argument(
-        "--max-model-len",
-        type=int,
-        default=8192,
-        help="Maximum model context length"
-    )
     
     args = parser.parse_args()
     
@@ -521,13 +309,6 @@ def main():
         model_path=args.model_path,
         datasets=datasets,
         output_dir=args.output_dir,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-        sample_size=args.sample_size,
-        use_cot=not args.no_cot,
-        enable_thinking=args.enable_thinking,
-        dtype=args.dtype,
-        max_model_len=args.max_model_len,
     )
 
 
