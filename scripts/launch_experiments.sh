@@ -13,7 +13,7 @@ module purge
 #module load PyTorch-bundle/2.1.2-foss-2023a-CUDA-12.1.1
 source /home4/s6019595/.llmvenv/bin/activate
 cd
-srun python3 /home4/s6019595/llm-think-too-much/launch_experiments.py \
+srun python3 /home4/s6019595/llm-think-too-much/dataset_generation.py \
   --data /home4/s6019595/llm-think-too-much/data/raw/train_data.parquet \
   --model-path /scratch/s6019595/models/L1-Qwen3-8B-Max/ \
   --generated-dir /home4/s6019595/llm-think-too-much/data/processed \
