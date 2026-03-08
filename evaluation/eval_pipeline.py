@@ -96,20 +96,6 @@ def evaluate_dataset(
     dataset_name: str,
     sampling_params: SamplingParams,
 ) -> EvalResult:
-    """
-    Evaluate a model on a single dataset.
-    
-    Args:
-        llm: vLLM model instance
-        tokenizer: Model tokenizer
-        df: Dataset DataFrame
-        dataset_name: Name of the dataset
-        sampling_params: vLLM sampling parameters
-        use_cot: Use chain-of-thought prompting
-    
-    Returns:
-        EvalResult with accuracy and token counts
-    """
     print(f"Evaluating on {dataset_name} ({len(df)} problems)")
         
     # Create prompts
