@@ -1,6 +1,8 @@
 models/*
 /data/raw/*
 /data/processed/*
+/data/old/*
+/data/models*
 !/data/test.parquet
 logs/*
 __pycache__
