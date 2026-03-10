@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from data.processing.math_equivalence import is_equiv
 
 EVAL_DATASET_PATH = Path(__file__).parent.parent / "data" / "raw" / "eval_data.parquet"
-AVAILABLE_DATASETS = ["math-500", "gsm8k", "olympiad", "amc", ]
+AVAILABLE_DATASETS = ["math-500", "gsm8k", "olympiad", "amc", "aime-250"]
 @dataclass
 class EvalResult:
     """Results for a single dataset evaluation."""
@@ -50,7 +50,7 @@ def load_eval_dataset(
         ).reset_index(drop=True)
     
     # Add unique_id column for compatibility
-    df["unique_id"] = df["id"].astype(str)
+    df["unique_id"] = df["id"].astype(str) + "-" + df["dataset"]
     
     print(f"Loaded {len(df)} problems from: {df['dataset'].value_counts().to_dict()}")
     return df
@@ -99,10 +99,11 @@ def evaluate_dataset(
     print(f"Evaluating on {dataset_name} ({len(df)} problems)")
         
     # Create prompts
-    prompts = [
-        build_prompt(row["problem"]) 
-        for _, row in df.iterrows()
-    ]    
+    #prompts = [
+    #    build_prompt(row["problem"]) 
+    #    for _, row in df.iterrows()
+    #]    
+    prompts = df["problem"].tolist()
     # Generate responses
     outputs = llm.generate(prompts, sampling_params)
     
@@ -157,7 +158,7 @@ def run_evaluation_pipeline(
     datasets: list[str] = ["math-500", "gsm8k", "olympiad"],
     output_dir: str = "./eval_results",
 ) -> dict[str, EvalResult]:
-    output_path = Path(output_dir)
+    output_path = Path(output_dir) / Path(model_path).stem
     output_path.mkdir(parents=True, exist_ok=True)
     
     print(f"Evaluation Pipeline")
@@ -253,8 +254,8 @@ def save_summary(results: dict[str, EvalResult], output_path: Path):
         })
     
     summary_df = pd.DataFrame(summary_data)
-    summary_file = output_path / "evaluation_summary.csv"
-    summary_df.to_csv(summary_file, index=False)
+    summary_file = output_path / "evaluation_summary.parquet"
+    summary_df.to_parquet(summary_file, index=False)
     print(f"Summary saved to {summary_file}")
 
 
@@ -274,7 +275,7 @@ def main():
         type=str,
         nargs="+",
         default=["math-500", "gsm8k", "olympiad"],
-        choices=["math-500", "gsm8k", "olympiad", "all"],
+        choices=["math-500", "gsm8k", "olympiad", "all", "aime-250"],
         help="Datasets to evaluate on (math-500, gsm8k, olympiad, or 'all')"
     )
     parser.add_argument(
