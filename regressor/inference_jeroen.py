@@ -6,7 +6,7 @@ from pathlib import Path
 from architecture import Regressor
 from functools import partial
 
-path_test_targets_hidden = Path(__file__).parent.parent / "data" / "processed" / "train" / "test_targets_hidden.parquet"
+path_test_targets_hidden = Path(__file__).parent.parent / "data" / "processed" / "dataset_splitting"/ "test_targets_hidden_bert.parquet" #"eval_L1_bert" / "gsm8k_olympiad_amc_hidden_L1.parquet"
 
 @partial(jax.jit, static_argnames=['predict_too_hard'])
 def predict_batch(network: Regressor, hidden: jax.Array, predict_too_hard: bool = False) -> tuple[jax.Array, jax.Array]:
@@ -32,13 +32,12 @@ def main():
     #h_path = "/scratch/s3799042/results_nlp/test_hidden_states.npy" #data_path / "hidden_states_test.npy"
     #h = jnp.load(h_path, allow_pickle= True).item()
     
-    network = Regressor.load_network(name="regressor_correct_aime.pkl")
+    network = Regressor.load_network(name="regressor_bert.pkl")#"regressor_bert.pkl")#
     
-    df = pd.read_parquet(
-        path_test_targets_hidden, 
-        columns=['question_id', 'target_think_tokens', 'hidden']
-    )
-    bins = np.sort(df["target_think_tokens"].unique())
+    df = pd.read_parquet(path_test_targets_hidden)
+    df = df.rename(columns={'id': 'question_id'})
+    bins = np.linspace(100, 5000, num=20, dtype=int)
+    #np.sort(df["target_think_tokens"].unique())
 
     df_unique = df.drop_duplicates(subset = 'question_id', keep = 'first')
 
@@ -66,7 +65,7 @@ def main():
     
     #np.save(Path(__file__).parent / "test_target_tokens.npy", target_tokens)
     np.save(
-        Path(__file__).parent / "test_target_tokens_L1_aime_correct_06.npy",
+        Path(__file__).parent / "results_bert_test.npy",
         {
             "ids": df_unique['question_id'],
             "target": target_tokens,

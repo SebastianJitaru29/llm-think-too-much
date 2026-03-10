@@ -10,49 +10,40 @@ from functools import partial
 
 from architecture import Regressor
 
+path_train_targets_hidden = Path(__file__).parent.parent / "data" / "processed" / "dataset_splitting" / "train_targets_hidden_bert.parquet"
 
-def load_df(train: bool = True) -> pd.DataFrame:
+USE_L1_HIDDEN_STATES = False
 
-    assert train
-
-    label = "train" if train else "test"
-    path =  Path(__file__).parent.parent / "data"
-
-    df_math = pd.read_parquet(path / f"{label}_math.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct'])
-    df_aime = pd.read_parquet(path / f"{label}_aime.parquet", columns=['question_id', 'target_think_tokens', 'generated_think_tokens', 'is_correct'])
+def create_regressor_dataset(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
     
-    return pd.concat((df_math, df_aime), ignore_index=True)
+    # 1. Clean up 'is_correct' to boolean
+    if df["is_correct"].dtype == object:
+        df["is_correct"] = (
+            df["is_correct"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .map({"true": True, "false": False})
+        )
+    else:
+        df["is_correct"] = df["is_correct"].astype(bool)
+
+    bins = np.sort(df["target_think_tokens"].unique())
+
+    df_unique = df.drop_duplicates(subset=["question_id", "target_think_tokens"], keep="first")
+    y_df = df_unique.pivot(index="question_id", columns="target_think_tokens", values="is_correct")
+    y_df = y_df.fillna(0).astype(np.int32)
+    
+    hidden_df = df.drop_duplicates(subset=["question_id"]).set_index("question_id")
+    
+    hidden_df = hidden_df.loc[y_df.index]
+    
+    x = np.stack(hidden_df["hidden"].tolist())
+    y = y_df.to_numpy()
+    
+    return x, y, tuple(bins)
 
 
-def create_regressor_dataset(h: np.ndarray, h_ids: np.ndarray, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
-
-    q = df.drop_duplicates(["question_id", "target_think_tokens"], keep="first")
-    q = q.rename(columns={"generated_think_tokens": "actual_think_tokens"})
-
-    bins = np.sort(q["target_think_tokens"].unique())
-
-    correct = q[["is_correct", "target_think_tokens", "question_id"]].copy()
- 
-    correct["is_correct"] = (
-        correct["is_correct"]
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .map({"true": True, "false": False})
-    )
-
-
-    correct = pd.pivot(correct, index="question_id", columns="target_think_tokens", values="is_correct")
-    correct = correct.astype(float).fillna(0)
-    correct = correct.sort_index(axis="columns")
-
-    # Align df with the hidden state
-    mask = np.isin(h_ids, correct.index)
-    h = h[mask]
-    h_ids = h_ids[mask]
-    correct = correct.reindex(h_ids, axis="index")
-
-    return np.squeeze(h), correct.to_numpy().astype(np.int32), tuple(bins)
 
 def loss_dropout(
     network: Regressor,
@@ -133,27 +124,11 @@ def batch_dataset(x: np.ndarray, y: np.ndarray, batch: int, shuffle: bool = Fals
 
         yield x[s:e, :], y[s:e, :]
 
-
-def load_hidden_states() -> tuple[np.ndarray, np.ndarray]:
-    
-    h_math = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_math.npy")
-    h_math_ids = np.arange(h_math.shape[0])
-
-    h_aim = np.load(Path(__file__).parent / "innit_hidden_states" / "hidden_states_aime.npy")
-    temp = pd.read_parquet(Path(__file__).parent.parent / "data" / "aime.parquet")
-    h_aim_ids = np.arange(h_aim.shape[0])
-
-    assert h_aim.shape[0] == temp.shape[0], "Aime mismatch"
-
-    return np.concat((h_math, h_aim), axis=0), np.concat((h_math_ids, h_aim_ids))
-    
-
     
 def get_dataset(train: bool = True) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
-    df = load_df(train)
-    h, h_ids = load_hidden_states()
+    df = pd.read_parquet(path = path_train_targets_hidden)
 
-    return create_regressor_dataset(h, h_ids, df)
+    return create_regressor_dataset(df)
 
 
 
@@ -176,8 +151,10 @@ def train(
     x_train, y_train = x[train_idx], y[train_idx]
     x_valid, y_valid = x[valid_idx], y[valid_idx]
 
-    
-    layers = (4_096, 1024, 512, 256, 10)
+    if USE_L1_HIDDEN_STATES:
+        layers = (4_096, 1024, 512, 256, 20)
+    else:
+        layers = (768, 1024, 512, 256, 20)
 
     network = Regressor(
         arch=Regressor.init_mlp(
@@ -253,9 +230,9 @@ if __name__ == "__main__":
     # matplotlib.use("Qt5Agg")
 
     x, y, bins = get_dataset()
-    network, tl, vl, va, vtnr = train(x, y, bins=bins, epochs=80, batch_size=512, dropout=0.20)
+    network, tl, vl, va, vtnr = train(x, y, bins=bins, epochs=140, batch_size=512, dropout=0.20)
 
-    Regressor.save_network(network)
+    Regressor.save_network(network, name = "regressor_bert.pkl")
 
     basline_acc, baseline_tnr = calc_baseline_stats(y)
 
@@ -270,5 +247,5 @@ if __name__ == "__main__":
 
     ax.set_xlabel("Epochs", fontsize=12)
 
-    fig.savefig("./perf.png")
+    fig.savefig("./perf2.png")
 
