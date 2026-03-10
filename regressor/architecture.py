@@ -17,8 +17,9 @@ class Regressor(flax.struct.PyTreeNode):
 
     
     @staticmethod
-    def save_network(network: Regressor, name: str = "regressor.pkl"):
-
+    def save_network(network: Regressor, name: str = "regressor.pkl", dir = Path(__file__).parent):
+        dir.mkdir(parents=True, exist_ok=True)
+        
         leaves, _ = jax.tree.flatten(network.arch)
         python_leaves = [x.tolist() for x in leaves]
 
@@ -29,7 +30,7 @@ class Regressor(flax.struct.PyTreeNode):
             "bins": network.bins
         }
 
-        with open(Path(__file__).parent / name, "wb") as f:
+        with open(dir / name, "wb") as f:
             pickle.dump(save_obj, f)
     
 

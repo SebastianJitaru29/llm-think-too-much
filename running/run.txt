@@ -1,0 +1,29 @@
+1. Run vllm_hack.py
+2. In /venv/lib/python3.10/site-packages/vllm/platforms/interface.py line 212 change:
+"return int(physical_device_id)" to "return physical_device_id"
+3. Run python file with:
+PYTHONMULTIPROCESSING_START_METHOD=spawn \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+CUDA_VISIBLE_DEVICES=MIG-03c7a8b7-dd9c-5bda-82fb-1cf2e9c3a34d \
+python3 launch_regressor.py
+
+
+source /scratch/s3799042/venvs/think-reduction/bin/activate
+
+cd /home/s3799042/projects/llm-think-too-much
+
+
+XLA_PYTHON_CLIENT_PREALLOCATE=true \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
+PYTHONMULTIPROCESSING_START_METHOD=spawn \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+CUDA_VISIBLE_DEVICES=MIG-0fb6bae2-fd70-5e49-921b-9d8c9f43e593 \
+python3 launch_regressor_jeroen.py
+
+
+
+
+4: MIG-0fb6bae2-fd70-5e49-921b-9d8c9f43e593
+7: 
+8: MIG-76de4d8d-dd90-510e-bc47-b5feb5c965b3
+9: MIG-03c7a8b7-dd9c-5bda-82fb-1cf2e9c3a34d

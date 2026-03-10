@@ -7,9 +7,36 @@ import pandas as pd
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 from data.processing.math_equivalence import is_equiv
+from pathlib import Path
 
-def build_prompt(problem: str, target_think_tokens: int) -> str:
-    return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens. <think>"
+MODEL = "l3lab/L1-Qwen3-8B-Max"
+OUTPUT_PATH = Path(__file__).parent / "regressor_results_test_L1.parquet"
+TEST_PROBLEMS = Path(__file__).parent / "data" / "processed" / "dataset_splitting" / "test.parquet" #"eval_L1_bert" / "gsm8k_olympiad_amc.parquet" # "old" / "dataset_splitting" / "test.parquet"
+TEST_TARGET_TOKENS = Path(__file__).parent / "regressor" / "test_target_tokens_L1_aime_correct_06.npy"
+
+IS_EVAL = True
+
+def build_prompt(problem: str, target_think_tokens: int, tokenizer, use_chat_template = False) -> str:
+    if IS_EVAL:
+        problem = f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}."
+
+    prompt = f"{problem} Think for {target_think_tokens} tokens. <think>"
+
+
+    if use_chat_template == False:
+        return prompt
+    
+    messages = [
+        {"role": "user", "content": prompt}
+    ]
+
+    prompt= tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True
+    )
+    return prompt
 
 def extract_boxed(s: str) -> str | None:
     if not s: return None
@@ -21,47 +48,57 @@ def extract_think_text(full_text: str) -> str:
     return match.group(1).strip() if match else ""
 
 def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
-    exp_val = extract_boxed(expected_answer)
+    if IS_EVAL == False:
+        exp_val = extract_boxed(expected_answer)
+    else:
+        exp_val = expected_answer
     gen_val = extract_boxed(generated_answer)
 
     if exp_val is None:
         exp_val = expected_answer.strip()
 
-    if exp_val is None or gen_val is None:
+    if exp_val is None:
         print("Expected value is none")
-        return False
+
     
+    if gen_val is None:
+        print("Generated value is none")
+        print(generated_answer)
+        
     return is_equiv(gen_val, exp_val)
 
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", required=True)
-    parser.add_argument("--generated-dir", required=True)
-    parser.add_argument("--file-name", default="static_regressor_results")
-    args = parser.parse_args()
+    df = pd.read_parquet(TEST_PROBLEMS)
+    targets = np.load(TEST_TARGET_TOKENS, allow_pickle=True).item()
 
-    df = pd.read_parquet("./data/test_all.parquet")
-    targets = np.load("./data/test_target_tokens.npy")
+    df = df.rename(columns={'id': 'question_id'})
+
+    df =  df.groupby("question_id", as_index=False).first()
+    mask = np.isin(df['question_id'], targets['ids'])
+    df = df[mask]
+    if len(df) != len(targets['ids']):
+        raise ValueError(f"Data length mismatch: DataFrame has {len(df)} rows, targets has {len(targets['ids'])} elements.")
     
-    if len(df) != len(targets):
-        raise ValueError(f"Data length mismatch: DataFrame has {len(df)} rows, targets has {len(targets)} elements.")
-
-    os.makedirs(args.generated_dir, exist_ok=True)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    targets = targets['target']
+    #os.makedirs(args.generated_dir, exist_ok=True)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
     
     llm = LLM(
-        model=args.model_path,
+        model=MODEL,
         dtype="float16", 
         trust_remote_code=True,
         tensor_parallel_size=1, 
         max_model_len=32768,    
     )
 
-    sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
+    sampling_params = SamplingParams(max_tokens=8000, temperature=0.2, skip_special_tokens=False)
 
     prompts = []
     for i in range(len(df)):
-        prompts.append(build_prompt(df.iloc[i]["problem"], targets[i]))
+        prompts.append(build_prompt(df.iloc[i]["prompt"], targets[i], tokenizer, use_chat_template=False))
+
+    print(prompts[0])
 
     t0 = time.perf_counter()
     outputs = llm.generate(prompts, sampling_params)
@@ -84,12 +121,13 @@ def main():
     for i in range(len(df)):
         row = df.iloc[i]
         full_text = generated_texts[i]
-        is_ok = evaluate_answer(row["solution"], full_text)
+        #print(full_text)
+        is_ok = evaluate_answer(row["solution_col"], full_text)
 
         records.append({
-            "question_id": i,
+            "question_id": row['question_id'],
             "prompt": prompts[i],
-            "solution": row["solution"],
+            "solution": row["solution_col"],
             "generated_think_text": think_texts[i],
             "generated_text": full_text,
             "target_think_tokens": int(targets[i]),
@@ -99,7 +137,7 @@ def main():
         })
 
     final_df = pd.DataFrame(records)
-    out_path = os.path.join(args.generated_dir, f"{args.file_name}.parquet")
+    out_path = os.path.join(OUTPUT_PATH)
     final_df.to_parquet(out_path, index=False)
 
 if __name__ == "__main__":
