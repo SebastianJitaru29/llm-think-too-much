@@ -59,25 +59,22 @@ def extract_boxed(s: str) -> str | None:
     if not s:
         return None
     # MATH & AIME
-    m = re.search(r"\\boxed\{([^}]*)\}", s)
-    if m:
-        return m.group(1).strip()
-    # GSM8K
-    matches = re.findall(
-        r"(?m)^[ \t]*####[ \t]*([^\n\r#]+?)[ \t]*$",
-        s
-    )
+    matches = re.findall(r"\\{1,2}boxed\{([^}]*)\}", s)
     if matches:
-        return matches[-1].strip()
+        return ", ".join(m.strip() for m in matches)
+    # GSM8K
+    matches = re.findall(r"(?m)^[ \t]*####[ \t]*([^\n\r#]+?)[ \t]*$", s)
+    if matches:
+        return ", ".join(m.strip() for m in matches)
     # Olympiad
-    m = re.search(r"\$([^$]*)\$", s)
-    if m:
-        return m.group(1).strip()
-    # AMC 
-    m = re.search(r"(?m)^[ \t]*([+-]?\d+(?:\.\d+)?)[ \t]*$", s)
-    if m:
-        return m.group(1)
-    return None
+    matches = re.findall(r"\$([^$]*)\$", s)
+    if matches:
+        return ", ".join(m.strip() for m in matches)
+    # AMC
+    matches = re.findall(r"(?m)^[ \t]*([+-]?\d+(?:\.\d+)?)[ \t]*$", s)
+    if matches:
+        return ", ".join(m.strip() for m in matches)
+    return s
 
 def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
     exp_val = extract_boxed(expected_answer)
