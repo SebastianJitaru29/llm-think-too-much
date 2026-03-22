@@ -96,11 +96,11 @@ def evaluate_dataset(
     print(f"Evaluating on {dataset_name} ({len(df)} problems)")
         
     # Create prompts
-    #prompts = [
-    #    build_prompt(row["problem"]) 
-    #    for _, row in df.iterrows()
-    #]    
-    prompts = df["problem"].tolist()
+    prompts = [
+       build_prompt(row["problem"]) 
+       for _, row in df.iterrows()
+    ]    
+    #prompts = df["problem"].tolist()
     # Generate responses
     outputs = llm.generate(prompts, sampling_params)
     
@@ -174,7 +174,7 @@ def run_evaluation_pipeline(
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     
-    sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
+    sampling_params = SamplingParams(max_tokens=32000, temperature=0, skip_special_tokens=False)
     # Evaluate each dataset
     results: dict[str, EvalResult] = {}
     
