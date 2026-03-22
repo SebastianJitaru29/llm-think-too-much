@@ -58,22 +58,22 @@ def load_eval_dataset(
 def extract_boxed(s: str) -> str | None:
     if not s:
         return None
-    # MATH & AIME
+    # MATH & AIME — take LAST boxed match (final answer, not thinking)
     matches = re.findall(r"\\{1,2}boxed\{([^}]*)\}", s)
     if matches:
-        return ", ".join(m.strip() for m in matches)
+        return matches[-1].strip()
     # GSM8K
     matches = re.findall(r"(?m)^[ \t]*####[ \t]*([^\n\r#]+?)[ \t]*$", s)
     if matches:
-        return ", ".join(m.strip() for m in matches)
+        return matches[-1].strip()
     # Olympiad
     matches = re.findall(r"\$([^$]*)\$", s)
     if matches:
-        return ", ".join(m.strip() for m in matches)
+        return matches[-1].strip()
     # AMC
     matches = re.findall(r"(?m)^[ \t]*([+-]?\d+(?:\.\d+)?)[ \t]*$", s)
     if matches:
-        return ", ".join(m.strip() for m in matches)
+        return matches[-1].strip()
     return s
 
 def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
@@ -84,7 +84,7 @@ def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
     return is_equiv(gen_val, exp_val), exp_val, gen_val
 
 def build_prompt(problem: str) -> str:
-    return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}."
+    return f"{problem}\nPlease think step by step and put your final answer within \\boxed{{}}."
 
 def evaluate_dataset(
     llm: LLM,
@@ -113,7 +113,7 @@ def evaluate_dataset(
         generated_text = output.outputs[0].text
         
         # Count tokens
-        token_count = len(tokenizer(generated_text, add_special_tokens=False)["input_ids"])
+        token_count = len(output.outputs[0].token_ids)
         total_tokens += token_count
         
         # Evaluate correctness
@@ -126,7 +126,7 @@ def evaluate_dataset(
         
         results.append({
             "unique_id": df.iloc[i]["unique_id"],
-            "problem": df.iloc[i]["problem"],
+            "prompt": prompts[i],
             "solution": df.iloc[i]["solution"],
             "generated": generated_text,
             "expected_value": expected_value,
@@ -169,12 +169,12 @@ def run_evaluation_pipeline(
         dtype="bfloat16", #On V100, use float16
         trust_remote_code=True,
         tensor_parallel_size=1, 
-        max_model_len=32768,    
+        max_model_len=6000,    
         #gpu_memory_utilization=0.8,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     
-    sampling_params = SamplingParams(max_tokens=32000, temperature=0, skip_special_tokens=False)
+    sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
     # Evaluate each dataset
     results: dict[str, EvalResult] = {}
     

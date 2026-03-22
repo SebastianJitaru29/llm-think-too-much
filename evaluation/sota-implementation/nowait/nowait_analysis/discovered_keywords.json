@@ -1,0 +1,93 @@
+{
+  "model": "/scratch/s6019595/models/DeepSeek-R1-Distill-Qwen-1.5B",
+  "datasets": [
+    "math-500"
+  ],
+  "num_samples": 100,
+  "num_runs": 1,
+  "top_words": [
+    {
+      "word": "so,",
+      "count": 703
+    },
+    {
+      "word": "wait,",
+      "count": 464
+    },
+    {
+      "word": "but",
+      "count": 403
+    },
+    {
+      "word": "therefore,",
+      "count": 217
+    },
+    {
+      "word": "alternatively,",
+      "count": 197
+    },
+    {
+      "word": "first,",
+      "count": 143
+    },
+    {
+      "word": "now,",
+      "count": 140
+    },
+    {
+      "word": "to",
+      "count": 122
+    },
+    {
+      "word": "let",
+      "count": 106
+    },
+    {
+      "word": "we",
+      "count": 80
+    },
+    {
+      "word": "the",
+      "count": 58
+    },
+    {
+      "word": "then,",
+      "count": 53
+    },
+    {
+      "word": "similarly,",
+      "count": 47
+    },
+    {
+      "word": "next,",
+      "count": 44
+    },
+    {
+      "word": "final",
+      "count": 40
+    },
+    {
+      "word": "compute",
+      "count": 38
+    },
+    {
+      "word": "given",
+      "count": 34
+    },
+    {
+      "word": "from",
+      "count": 28
+    },
+    {
+      "word": "thus,",
+      "count": 28
+    },
+    {
+      "word": "which",
+      "count": 26
+    }
+  ],
+  "suggested_suppress": [
+    "but"
+  ]
+}
