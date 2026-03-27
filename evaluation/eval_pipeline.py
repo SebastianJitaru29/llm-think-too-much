@@ -83,8 +83,10 @@ def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
         return False, exp_val, gen_val
     return is_equiv(gen_val, exp_val), exp_val, gen_val
 
-def build_prompt(problem: str) -> str:
-    return f"{problem}\nPlease think step by step and put your final answer within \\boxed{{}}."
+def build_prompt(problem: str, dataset_name: str) -> str:
+    if dataset_name == "aime-250":
+        return f"{problem}"
+    return f"{problem}\nLet's think step by step and output the final answer within boxed{{}}."
 
 def evaluate_dataset(
     llm: LLM,
@@ -97,7 +99,7 @@ def evaluate_dataset(
         
     # Create prompts
     prompts = [
-       build_prompt(row["problem"]) 
+       build_prompt(row["problem"], dataset_name) 
        for _, row in df.iterrows()
     ]    
     #prompts = df["problem"].tolist()
@@ -169,12 +171,12 @@ def run_evaluation_pipeline(
         dtype="bfloat16", #On V100, use float16
         trust_remote_code=True,
         tensor_parallel_size=1, 
-        max_model_len=6000,    
+        max_model_len=32000,    
         #gpu_memory_utilization=0.8,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     
-    sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
+    sampling_params = SamplingParams(max_tokens=32000, temperature=0, skip_special_tokens=False)
     # Evaluate each dataset
     results: dict[str, EvalResult] = {}
     
