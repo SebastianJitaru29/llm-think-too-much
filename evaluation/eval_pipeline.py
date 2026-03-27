@@ -274,7 +274,7 @@ def main():
         type=str,
         nargs="+",
         default=["math-500", "gsm8k", "olympiad"],
-        choices=["math-500", "gsm8k", "olympiad", "all", "aime-250"],
+        choices=["math-500", "gsm8k", "olympiad", "all", "aime-250", "amc"],
         help="Datasets to evaluate on (math-500, gsm8k, olympiad, or 'all')"
     )
     parser.add_argument(
