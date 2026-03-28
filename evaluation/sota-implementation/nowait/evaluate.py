@@ -51,25 +51,34 @@ def build_suppress_ids(tokenizer, keywords: list[str]) -> list[int]:
     return sorted(suppress)
 
 
-def make_logits_processor(suppress_ids: list[int]):
-    def processor(token_ids, logits):
-        logits[suppress_ids] = float("-inf")
-        return logits
-    return processor
-
-
 def extract_boxed(s: str) -> str | None:
+    """Extract answer from \\boxed{...}, handling nested braces."""
     if not s:
         return None
-    matches = re.findall(r"\\{1,2}boxed\{([^}]*)\}", s)
-    if matches:
-        return matches[-1].strip()
+    # Find last \boxed{ and match balanced braces
+    idx = s.rfind("\\boxed{")
+    if idx == -1:
+        idx = s.rfind("\\\\boxed{")
+    if idx != -1:
+        start = s.index("{", idx)
+        depth, i = 1, start + 1
+        while i < len(s) and depth > 0:
+            if s[i] == "{":
+                depth += 1
+            elif s[i] == "}":
+                depth -= 1
+            i += 1
+        if depth == 0:
+            return s[start + 1 : i - 1].strip()
+    # Fallback: #### pattern (GSM8K style)
     matches = re.findall(r"(?m)^[ \t]*####[ \t]*([^\n\r#]+?)[ \t]*$", s)
     if matches:
         return matches[-1].strip()
+    # Fallback: last $...$ expression
     matches = re.findall(r"\$([^$]*)\$", s)
     if matches:
         return matches[-1].strip()
+    # Fallback: bare number on its own line
     matches = re.findall(r"(?m)^[ \t]*([+-]?\d+(?:\.\d+)?)[ \t]*$", s)
     if matches:
         return matches[-1].strip()
@@ -100,16 +109,19 @@ def main():
     llm = LLM(model=args.model_path, dtype="bfloat16", trust_remote_code=True, max_model_len=32000)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
-    logits_processor = None
+    # Build logit_bias dict for nowait mode (V1-compatible)
+    logit_bias = None
     if args.mode == "nowait":
         suppress_ids = build_suppress_ids(tokenizer, NOWAIT_KEYWORDS)
         print(f"Suppressing {len(suppress_ids)} token IDs from {len(NOWAIT_KEYWORDS)} keywords")
-        logits_processor = make_logits_processor(suppress_ids)
+        # -100 is the maximum negative bias allowed by vLLM; effectively suppresses tokens
+        logit_bias = {token_id: -100.0 for token_id in suppress_ids}
 
     sampling_params = SamplingParams(
         max_tokens=32000,
         temperature=0,
         skip_special_tokens=False,
+        logit_bias=logit_bias,
     )
 
     run_name = f"{Path(args.model_path).stem}_{args.mode}"
@@ -127,10 +139,8 @@ def main():
                 prompts.append(row["problem"])
             else:
                 prompts.append(f"{row['problem']}\nLet's think step by step and output the final answer within boxed{{}}.")
-        generate_kwargs = {}
-        if logits_processor is not None:
-            generate_kwargs["logits_processors"] = [logits_processor]
-        outputs = llm.generate(prompts, sampling_params, **generate_kwargs)
+
+        outputs = llm.generate(prompts, sampling_params)
 
         results = []
         correct = 0
