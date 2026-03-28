@@ -100,17 +100,16 @@ def main():
     llm = LLM(model=args.model_path, dtype="bfloat16", trust_remote_code=True, max_model_len=32000)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
-    logits_processors = []
+    logits_processor = None
     if args.mode == "nowait":
         suppress_ids = build_suppress_ids(tokenizer, NOWAIT_KEYWORDS)
         print(f"Suppressing {len(suppress_ids)} token IDs from {len(NOWAIT_KEYWORDS)} keywords")
-        logits_processors.append(make_logits_processor(suppress_ids))
+        logits_processor = make_logits_processor(suppress_ids)
 
     sampling_params = SamplingParams(
         max_tokens=32000,
         temperature=0,
         skip_special_tokens=False,
-        logits_processors=logits_processors or None,
     )
 
     run_name = f"{Path(args.model_path).stem}_{args.mode}"
@@ -128,7 +127,10 @@ def main():
                 prompts.append(row["problem"])
             else:
                 prompts.append(f"{row['problem']}\nLet's think step by step and output the final answer within boxed{{}}.")
-        outputs = llm.generate(prompts, sampling_params)
+        generate_kwargs = {}
+        if logits_processor is not None:
+            generate_kwargs["logits_processors"] = [logits_processor]
+        outputs = llm.generate(prompts, sampling_params, **generate_kwargs)
 
         results = []
         correct = 0
