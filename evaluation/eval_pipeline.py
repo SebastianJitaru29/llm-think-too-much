@@ -1,303 +1,180 @@
 import argparse
 import re
 import gc
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import pandas as pd
 import torch
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
-import numpy as np
 
-# Add parent directory to path for imports
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from data.processing.math_equivalence import is_equiv
 
 EVAL_DATASET_PATH = Path(__file__).parent.parent / "data" / "raw" / "eval_data.parquet"
-AVAILABLE_DATASETS = ["math-500", "gsm8k", "olympiad", "amc", "aime-250"]
-@dataclass
-class EvalResult:
-    """Results for a single dataset evaluation."""
-    dataset_name: str
-    accuracy: float
-    num_correct: int
-    num_total: int
-    avg_tokens: float
-    total_tokens: int
-    results_df: pd.DataFrame
+
+# 17 keywords from the paper (Table in Section 3.1)
+NOWAIT_KEYWORDS = [
+    "wait", "alternatively", "hmm", "but", "however",
+    "alternative", "another", "check", "double-check",
+    "oh", "maybe", "verify", "other", "again", "now", "ah", "any",
+]
 
 
-def load_eval_dataset(
-    datasets: list[str] | None = None,
-    sample_size: int | None = None,
-) -> pd.DataFrame:
-    if not EVAL_DATASET_PATH.exists():
-        raise FileNotFoundError(
-            f"Evaluation dataset not found at {EVAL_DATASET_PATH}. "
-            "Please ensure the data file exists."
-        )
-    
-    df = pd.read_parquet(EVAL_DATASET_PATH)
-    df = df[df["dataset"].isin(datasets)]
-    
-    # Apply sample size per dataset
-    if sample_size is not None:
-        df = df.groupby("dataset").apply(
-            lambda x: x.sample(n=min(sample_size, len(x)), random_state=42)
-        ).reset_index(drop=True)
-    
-    # Add unique_id column for compatibility
-    df["unique_id"] = df["id"].astype(str) + "-" + df["dataset"]
-    
-    print(f"Loaded {len(df)} problems from: {df['dataset'].value_counts().to_dict()}")
-    return df
+def build_suppress_ids(tokenizer, keywords: list[str]) -> list[int]:
+    """Scan vocabulary, collect token IDs whose decoded text matches a keyword.
+
+    Uses substring matching as described in the paper: a token is suppressed
+    if any keyword is a substring of the token's decoded text (case-insensitive).
+    """
+    suppress = set()
+    for token_id in range(tokenizer.vocab_size):
+        try:
+            decoded = tokenizer.decode([token_id])
+        except Exception:
+            continue
+        cleaned = decoded.strip().lower()
+        if not cleaned:
+            continue
+        for kw in keywords:
+            if kw in cleaned:
+                suppress.add(token_id)
+                break
+    return sorted(suppress)
+
 
 def extract_boxed(s: str) -> str | None:
+    """Extract answer from \\boxed{...}, handling nested braces."""
     if not s:
         return None
-    # MATH & AIME — take LAST boxed match (final answer, not thinking)
-    matches = re.findall(r"\\{1,2}boxed\{([^}]*)\}", s)
-    if matches:
-        return matches[-1].strip()
-    # GSM8K
+    # Find last \boxed{ and match balanced braces
+    idx = s.rfind("\\boxed{")
+    if idx == -1:
+        idx = s.rfind("\\\\boxed{")
+    if idx != -1:
+        start = s.index("{", idx)
+        depth, i = 1, start + 1
+        while i < len(s) and depth > 0:
+            if s[i] == "{":
+                depth += 1
+            elif s[i] == "}":
+                depth -= 1
+            i += 1
+        if depth == 0:
+            return s[start + 1 : i - 1].strip()
+    # Fallback: #### pattern (GSM8K style)
     matches = re.findall(r"(?m)^[ \t]*####[ \t]*([^\n\r#]+?)[ \t]*$", s)
     if matches:
         return matches[-1].strip()
-    # Olympiad
+    # Fallback: last $...$ expression
     matches = re.findall(r"\$([^$]*)\$", s)
     if matches:
         return matches[-1].strip()
-    # AMC
+    # Fallback: bare number on its own line
     matches = re.findall(r"(?m)^[ \t]*([+-]?\d+(?:\.\d+)?)[ \t]*$", s)
     if matches:
         return matches[-1].strip()
     return s
 
-def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
-    exp_val = extract_boxed(expected_answer)
-    gen_val = extract_boxed(generated_answer)
-    if exp_val is None or gen_val is None:
-        return False, exp_val, gen_val
-    return is_equiv(gen_val, exp_val), exp_val, gen_val
 
-def build_prompt(problem: str, dataset_name: str) -> str:
-    if dataset_name == "aime-250":
-        return f"{problem}"
-    return f"{problem}\nLet's think step by step and output the final answer within boxed{{}}."
-
-def evaluate_dataset(
-    llm: LLM,
-    tokenizer,
-    df: pd.DataFrame,
-    dataset_name: str,
-    sampling_params: SamplingParams,
-) -> EvalResult:
-    print(f"Evaluating on {dataset_name} ({len(df)} problems)")
-        
-    # Create prompts
-    prompts = [
-       build_prompt(row["problem"], dataset_name) 
-       for _, row in df.iterrows()
-    ]    
-    #prompts = df["problem"].tolist()
-    # Generate responses
-    outputs = llm.generate(prompts, sampling_params)
-    
-    # Process results
-    results = []
-    total_tokens = 0
-    num_correct = 0
-        
-    for i, output in enumerate(outputs):
-        generated_text = output.outputs[0].text
-        
-        # Count tokens
-        token_count = len(output.outputs[0].token_ids)
-        total_tokens += token_count
-        
-        # Evaluate correctness
-        is_correct, expected_value, generated_value = evaluate_answer(
-            str(df.iloc[i]["solution"]),
-            generated_text,
-        )
-        if is_correct:
-            num_correct += 1
-        
-        results.append({
-            "unique_id": df.iloc[i]["unique_id"],
-            "prompt": prompts[i],
-            "solution": df.iloc[i]["solution"],
-            "generated": generated_text,
-            "expected_value": expected_value,
-            "generated_value": generated_value,
-            "token_count": token_count,
-            "is_correct": is_correct
-        })
-    
-    results_df = pd.DataFrame(results)
-    accuracy = num_correct / len(df) if len(df) > 0 else 0.0
-    avg_tokens = total_tokens / len(df) if len(df) > 0 else 0.0
-    
-    return EvalResult(
-        dataset_name=dataset_name,
-        accuracy=accuracy,
-        num_correct=num_correct,
-        num_total=len(df),
-        avg_tokens=avg_tokens,
-        total_tokens=total_tokens,
-        results_df=results_df
-    )
-
-
-def run_evaluation_pipeline(
-    model_path: str,
-    datasets: list[str] = ["math-500", "gsm8k", "olympiad"],
-    output_dir: str = "./eval_results",
-) -> dict[str, EvalResult]:
-    output_path = Path(output_dir) / Path(model_path).stem
-    output_path.mkdir(parents=True, exist_ok=True)
-    
-    print(f"Evaluation Pipeline")
-    print(f"Model: {model_path}")
-    print(f"Datasets: {datasets}")
-    
-    # Initialize model
-    print("Loading model...")
-    llm = LLM(
-        model=model_path,
-        dtype="bfloat16", #On V100, use float16
-        trust_remote_code=True,
-        tensor_parallel_size=1, 
-        max_model_len=32000,    
-        #gpu_memory_utilization=0.8,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    
-    sampling_params = SamplingParams(max_tokens=32000, temperature=0, skip_special_tokens=False)
-    # Evaluate each dataset
-    results: dict[str, EvalResult] = {}
-    
-    for dataset_name in datasets:
-        df =load_eval_dataset(datasets=[dataset_name])
-        if len(df) == 0:
-            print(f"Warning: {dataset_name} is empty, skipping...")
-            continue
-        
-        # Evaluate
-        result = evaluate_dataset(
-            llm=llm,
-            tokenizer=tokenizer,
-            df=df,
-            dataset_name=dataset_name,
-            sampling_params=sampling_params,
-        )
-        
-        results[dataset_name] = result
-        
-        # Save individual results
-        result_file = output_path / f"{dataset_name}_results.parquet"
-        result.results_df.to_parquet(result_file)
-        print(f"Saved results to {result_file}")
-            
-    # Clean up
-    del llm
-    gc.collect()
-    torch.cuda.empty_cache()
-    
-    # Print summary
-    print_summary(results)
-    
-    # Save summary
-    save_summary(results, output_path)
-    
-    return results
-
-
-def print_summary(results: dict[str, EvalResult]):
-    """Print evaluation summary to console."""
-    print(f"{'Dataset':<15} {'Accuracy':>12} {'Correct':>10} {'Total':>8} {'Avg Tokens':>12}")
-    
-    total_correct = 0
-    total_problems = 0
-    total_tokens = 0
-    
-    for name, result in results.items():
-        print(f"{name:<15} {result.accuracy*100:>11.2f}% {result.num_correct:>10} {result.num_total:>8} {result.avg_tokens:>12.1f}")
-        total_correct += result.num_correct
-        total_problems += result.num_total
-        total_tokens += result.total_tokens
-    
-    print(f"{'-'*70}")
-    if total_problems > 0:
-        overall_acc = total_correct / total_problems
-        overall_avg_tokens = total_tokens / total_problems
-        print(f"{'OVERALL':<15} {overall_acc*100:>11.2f}% {total_correct:>10} {total_problems:>8} {overall_avg_tokens:>12.1f}")
-    print(f"{'='*70}\n")
-
-
-def save_summary(results: dict[str, EvalResult], output_path: Path):
-    """Save evaluation summary to CSV."""
-    summary_data = []
-    
-    for name, result in results.items():
-        summary_data.append({
-            "dataset": name,
-            "accuracy": result.accuracy,
-            "num_correct": result.num_correct,
-            "num_total": result.num_total,
-            "avg_tokens": result.avg_tokens,
-            "total_tokens": result.total_tokens
-        })
-    
-    summary_df = pd.DataFrame(summary_data)
-    summary_file = output_path / "evaluation_summary.parquet"
-    summary_df.to_parquet(summary_file, index=False)
-    print(f"Summary saved to {summary_file}")
+def evaluate_answer(expected: str, generated: str):
+    exp = extract_boxed(expected)
+    gen = extract_boxed(generated)
+    if exp is None or gen is None:
+        return False, exp, gen
+    return is_equiv(gen, exp), exp, gen
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Evaluate math reasoning models on math-500, gsm8k, and olympiad datasets"
-    )
-    
-    parser.add_argument(
-        "--model-path",
-        type=str,
-        required=True,
-        help="Path to model or HuggingFace model ID"
-    )
-    parser.add_argument(
-        "--datasets",
-        type=str,
-        nargs="+",
-        default=["math-500", "gsm8k", "olympiad"],
-        choices=["math-500", "gsm8k", "olympiad", "all", "aime-250", "amc"],
-        help="Datasets to evaluate on (math-500, gsm8k, olympiad, or 'all')"
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="./eval_results",
-        help="Directory to save results"
-    )
-    
+    parser = argparse.ArgumentParser(description="NoWait evaluation")
+    parser.add_argument("--model-path", type=str, required=True)
+    parser.add_argument("--datasets", type=str, nargs="+", default=["math-500", "gsm8k", "olympiad"])
+    parser.add_argument("--output-dir", type=str, default="./experiments")
+    parser.add_argument("--mode", type=str, default="baseline", choices=["baseline", "nowait"])
     args = parser.parse_args()
-    
-    # Handle 'all' option
-    datasets = args.datasets
-    if "all" in datasets:
-        datasets = AVAILABLE_DATASETS
-    
-    run_evaluation_pipeline(
-        model_path=args.model_path,
-        datasets=datasets,
-        output_dir=args.output_dir,
+
+    df = pd.read_parquet(EVAL_DATASET_PATH)
+    df = df[df["dataset"].isin(args.datasets)]
+    df["unique_id"] = df["id"].astype(str) + "-" + df["dataset"]
+    print(f"Loaded {len(df)} problems: {df['dataset'].value_counts().to_dict()}")
+
+    llm = LLM(model=args.model_path, dtype="bfloat16", trust_remote_code=True, max_model_len=32000)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+
+    # Build logit_bias dict for nowait mode (V1-compatible)
+    logit_bias = None
+    if args.mode == "nowait":
+        suppress_ids = build_suppress_ids(tokenizer, NOWAIT_KEYWORDS)
+        print(f"Suppressing {len(suppress_ids)} token IDs from {len(NOWAIT_KEYWORDS)} keywords")
+        # -100 is the maximum negative bias allowed by vLLM; effectively suppresses tokens
+        logit_bias = {token_id: -100.0 for token_id in suppress_ids}
+
+    sampling_params = SamplingParams(
+        max_tokens=32000,
+        temperature=0,
+        skip_special_tokens=False,
+        logit_bias=logit_bias,
     )
+
+    run_name = f"{Path(args.model_path).stem}_{args.mode}"
+    output_path = Path(args.output_dir) / run_name
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    for dataset_name in args.datasets:
+        subset = df[df["dataset"] == dataset_name]
+        if len(subset) == 0:
+            continue
+
+        prompts = []
+        for _, row in subset.iterrows():
+            if dataset_name == "aime-250":
+                content = row["problem"]
+            else:
+                content = f"{row['problem']}\nLet's think step by step and output the final answer within boxed{{}}."
+
+            # Apply chat template so Qwen3 (and other chat models) get proper formatting
+            messages = [{"role": "user", "content": content}]
+            formatted = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            prompts.append(formatted)
+
+        outputs = llm.generate(prompts, sampling_params)
+
+        results = []
+        correct = 0
+        total_tokens = 0
+        for i, output in enumerate(outputs):
+            text = output.outputs[0].text
+            token_count = len(output.outputs[0].token_ids)
+            total_tokens += token_count
+            is_correct, exp_val, gen_val = evaluate_answer(str(subset.iloc[i]["solution"]), text)
+            if is_correct:
+                correct += 1
+            results.append({
+                "unique_id": subset.iloc[i]["unique_id"],
+                "prompt": prompts[i],
+                "solution": subset.iloc[i]["solution"],
+                "generated": text,
+                "expected_value": exp_val,
+                "generated_value": gen_val,
+                "token_count": token_count,
+                "is_correct": is_correct,
+            })
+
+        acc = correct / len(subset)
+        avg_tok = total_tokens / len(subset)
+        print(f"{dataset_name:<15} acc={acc*100:.1f}%  avg_tokens={avg_tok:.0f}  ({correct}/{len(subset)})")
+
+        pd.DataFrame(results).to_parquet(output_path / f"{dataset_name}_results.parquet")
+
+    del llm
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
     main()
-
