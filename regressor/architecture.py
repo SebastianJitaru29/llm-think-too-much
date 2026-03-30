@@ -35,9 +35,9 @@ class Regressor(flax.struct.PyTreeNode):
     
 
     @classmethod
-    def load_network(cls, name: str = "regressor.pkl") -> Regressor:
+    def load_network(cls, name: str = "regressor.pkl", dir = Path(__file__).parent) -> Regressor:
         
-        with open(Path(__file__).parent / name, "rb") as f:
+        with open(dir / name, "rb") as f:
             load_obj = pickle.load(f)
 
         python_leaves = load_obj.pop("arch_flatten")

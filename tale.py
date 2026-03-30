@@ -9,25 +9,45 @@ from transformers import AutoTokenizer
 from data.processing.math_equivalence import is_equiv
 from pathlib import Path
 
-# L1_p08_eval: L1 model on the eval dataset with the template
-# sentences_template_p08_eval.parquet: is qwen3-8b running on the eval dataset with the chat template
-# tale_template_p08: checking whether with the template tale actually adheres to the target tokens, math and aime
-# sentences_template_math_aime.parquet: checking whether with adding the template the model performs and adheres better.
+MODEL = "/scratch/s3799042/Qwen3-8B/"
+OUTPUT_PATH = Path(__file__).parent / "data" / "processed" / "results"/ "TALE_eval_template.parquet"
+TEST_PROBLEMS = Path(__file__).parent / "data" / "processed" / "eval_L1_bert" / "gsm8k_olympiad_amc.parquet" #"dataset_splitting" / "test.parquet" #"eval_L1_bert" / "gsm8k_olympiad_amc.parquet" # "old" / "dataset_splitting" / "test.parquet"
 
-MODEL = "/scratch/s3799042/Qwen3-8B/" #"l3lab/L1-Qwen3-8B-Max"  # "/scratch/s3799042/Qwen3-8B/" 
-OUTPUT_PATH = Path(__file__).parent / "data" / "processed" / "results"/ "sentences_template_math_aime.parquet"
-TEST_PROBLEMS = Path(__file__).parent / "data" / "processed" / "dataset_splitting" / "test.parquet" #"eval_L1_bert" / "gsm8k_olympiad_amc.parquet" #"dataset_splitting" / "test.parquet" #"eval_L1_bert" / "gsm8k_olympiad_amc.parquet" # "old" / "dataset_splitting" / "test.parquet"
-TEST_TARGET_TOKENS = Path(__file__).parent / "data" / "processed" / "regressor_target_tokens" / "rgs_results_L1_b20_p08.npy"
+DIR_TARGET_TOKENS = Path(__file__).parent / "data" / "processed" / "tale_target_tokens"
+IS_EVAL = True
 
-IS_EVAL = False
+def get_token_buget_prompt(question, tokenizer):
+    to_remove = "Let’s think step by step inside and output the final answer within boxed{}."
+
+    cleaned_text = question.replace(to_remove, "")
+
+    prompt = (
+            f"Q: {cleaned_text}"
+            "Task: Analyze the given question and estimate the minimum number of tokens "
+            "required to generate a complete and accurate response. "
+            "Please Give the response by strictly following this format: [[budget]]. "
+            "for example, Budget: [[12]].\n\n"
+            
+        )
+
+    messages = [
+        {"role": "user", "content": prompt}
+    ]
+
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False
+    )
+
+    return prompt
 
 def build_prompt(problem: str, target_think_tokens: int, tokenizer, use_chat_template = False) -> str:
     if IS_EVAL:
         problem = f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}."
 
-    prompt = f"{problem} Use less than {target_think_tokens // 60} sentences." # "Use less than {target_think_tokens} tokens." 
-                                                                               # Think for {target_think_tokens} tokens. <think>" 
-                                                                               # Use less than {target_think_tokens // 60} sentences. <think>"
+    prompt = f"{problem} Use less than {target_think_tokens} tokens."
 
 
     if use_chat_template == False:
@@ -77,17 +97,10 @@ def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
 
 def main():
     df = pd.read_parquet(TEST_PROBLEMS)
-    targets = np.load(TEST_TARGET_TOKENS, allow_pickle=True).item()
-    print(targets)
-    df = df.rename(columns={'id': 'question_id'})
 
-    df =  df.groupby("question_id", as_index=False).first()
-    mask = np.isin(df['question_id'], targets['ids'])
-    df = df[mask]
-    if len(df) != len(targets['ids']):
-        raise ValueError(f"Data length mismatch: DataFrame has {len(df)} rows, targets has {len(targets['ids'])} elements.")
-    
-    targets = targets['target']
+    df = df.rename(columns={'id': 'question_id'})
+    df = df.drop_duplicates(subset='question_id', keep='first')
+
     #os.makedirs(args.generated_dir, exist_ok=True)
     tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
     
@@ -99,11 +112,48 @@ def main():
         max_model_len=32768,    
     )
 
-    sampling_params = SamplingParams(max_tokens=10_000, temperature=0, skip_special_tokens=False)
+    sampling_params = SamplingParams(max_tokens=20_000, temperature=0, skip_special_tokens=False)
+
+
+    token_budget_prompt = []
+    for idx in range(len(df)):
+        token_budget_prompt.append(get_token_buget_prompt(df.iloc[idx]['prompt'], tokenizer))
+        if idx == 0:
+            print(df.iloc[idx]['prompt'])
+            print("CLEANED")
+            print(token_budget_prompt[0])
+
+    outputs_targets = llm.generate(token_budget_prompt, sampling_params)
+
+    targets = []
+    output_texts = []
+
+    for output in outputs_targets:
+        if len(output.outputs) > 0:
+            output_target = output.outputs[0].text
+            output_texts.append(output_target)
+
+            match = re.search(r"\[\[(\d+)\]\]", output_target)
+            if match:
+                targets.append(int(match.group(1)))
+            else:
+                targets.append(100)
+        else:
+            output_texts.append("")
+            targets.append(100)
+
+    data = {
+        "targets": np.array(targets),
+        "outputs": np.array(output_texts)
+    }
+
+    np.save(DIR_TARGET_TOKENS / "results_no_thinking_reversed.npy", data)
 
     prompts = []
     for i in range(len(df)):
+        print(targets[i])
         prompts.append(build_prompt(df.iloc[i]["prompt"], targets[i], tokenizer, use_chat_template=True))
+
 
     print(prompts[0])
 
