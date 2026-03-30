@@ -8,14 +8,16 @@ from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 from data.processing.math_equivalence import is_equiv
 from pathlib import Path
+from evaluation.evaluation import evaluate_answer
 
 # L1_p08_eval: L1 model on the eval dataset with the template
 # sentences_template_p08_eval.parquet: is qwen3-8b running on the eval dataset with the chat template
 # tale_template_p08: checking whether with the template tale actually adheres to the target tokens, math and aime
 # sentences_template_math_aime.parquet: checking whether with adding the template the model performs and adheres better.
+#L1_p08_new_evaluate.parquet: Using sebs evaluate_answer function
 
-MODEL = "/scratch/s3799042/Qwen3-8B/" #"l3lab/L1-Qwen3-8B-Max"  # "/scratch/s3799042/Qwen3-8B/" 
-OUTPUT_PATH = Path(__file__).parent / "data" / "processed" / "results"/ "sentences_template_math_aime.parquet"
+MODEL = "l3lab/L1-Qwen3-8B-Max"  #"/scratch/s3799042/Qwen3-8B/" #"l3lab/L1-Qwen3-8B-Max"  # "/scratch/s3799042/Qwen3-8B/" 
+OUTPUT_PATH = Path(__file__).parent / "data" / "processed" / "results"/ "L1_p08_new_evaluate.parquet"
 TEST_PROBLEMS = Path(__file__).parent / "data" / "processed" / "dataset_splitting" / "test.parquet" #"eval_L1_bert" / "gsm8k_olympiad_amc.parquet" #"dataset_splitting" / "test.parquet" #"eval_L1_bert" / "gsm8k_olympiad_amc.parquet" # "old" / "dataset_splitting" / "test.parquet"
 TEST_TARGET_TOKENS = Path(__file__).parent / "data" / "processed" / "regressor_target_tokens" / "rgs_results_L1_b20_p08.npy"
 
@@ -25,7 +27,7 @@ def build_prompt(problem: str, target_think_tokens: int, tokenizer, use_chat_tem
     if IS_EVAL:
         problem = f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}."
 
-    prompt = f"{problem} Use less than {target_think_tokens // 60} sentences." # "Use less than {target_think_tokens} tokens." 
+    prompt = f"{problem} Think for {target_think_tokens} tokens." # "Use less than {target_think_tokens} tokens." 
                                                                                # Think for {target_think_tokens} tokens. <think>" 
                                                                                # Use less than {target_think_tokens // 60} sentences. <think>"
 
@@ -53,26 +55,6 @@ def extract_boxed(s: str) -> str | None:
 def extract_think_text(full_text: str) -> str:
     match = re.search(r"<think>(.*?)</think>", full_text, flags=re.DOTALL)
     return match.group(1).strip() if match else ""
-
-def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
-    if IS_EVAL == False:
-        exp_val = extract_boxed(expected_answer)
-    else:
-        exp_val = expected_answer
-    gen_val = extract_boxed(generated_answer)
-
-    if exp_val is None:
-        exp_val = expected_answer.strip()
-
-    if exp_val is None:
-        print("Expected value is none")
-
-    
-    if gen_val is None:
-        print("Generated value is none")
-        print(generated_answer)
-        
-    return is_equiv(gen_val, exp_val)
 
 
 def main():
@@ -111,34 +93,33 @@ def main():
     outputs = llm.generate(prompts, sampling_params)
     t1 = time.perf_counter()
     
+    full_texts = []
     generated_texts = []
-    think_texts = []
     
     for i, output in enumerate(outputs):
         prompt_text = prompts[i]
         generated_suffix = output.outputs[0].text
         full_text = prompt_text + generated_suffix
-        generated_texts.append(full_text)
-        think_texts.append(extract_think_text(full_text))
+        full_texts.append(full_text)
+        generated_texts.append(generated_suffix)
 
-    think_encodings = tokenizer(think_texts, add_special_tokens=False)["input_ids"]
-    think_lengths = [len(ids) for ids in think_encodings]
+    think_encodings = tokenizer(generated_texts, add_special_tokens=False)["input_ids"]
+    generated_lengths = [len(ids) for ids in think_encodings]
 
     records = []
     for i in range(len(df)):
         row = df.iloc[i]
-        full_text = generated_texts[i]
-        #print(full_text)
-        is_ok = evaluate_answer(row["solution_col"], full_text)
+        full_text = full_texts[i]
+        (is_ok, _, _) = evaluate_answer(row["solution_col"], full_text)
 
         records.append({
             "question_id": row['question_id'],
             "prompt": prompts[i],
             "solution": row["solution_col"],
-            "generated_think_text": think_texts[i],
+            "generated_think_text": generated_texts[i],
             "generated_text": full_text,
             "target_think_tokens": int(targets[i]),
-            "generated_think_tokens": think_lengths[i],
+            "generated_think_tokens": generated_lengths[i],
             "latency_sec": (t1 - t0) / len(prompts),
             "is_correct": bool(is_ok),
         })
