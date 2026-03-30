@@ -124,6 +124,11 @@ def run_dataset(args, subset, dataset_name, llm, tokenizer, logit_bias=None, tal
             content = f"{content} Think for {target} tokens."
             target_tokens_list.append(target)
             prompts.append(format_prompt(content, tokenizer, enable_thinking=True))
+        elif mode == "sentence":
+            target = int(regressor_targets[i])
+            content = f"{content} Use less than {target // 60} sentences."
+            target_tokens_list.append(target)
+            prompts.append(format_prompt(content, tokenizer, enable_thinking=True))
         elif mode == "tale":
             target = int(tale_targets[i])
             content = f"{content} Use less than {target} tokens."
@@ -185,15 +190,15 @@ def main():
     parser.add_argument("--datasets", type=str, nargs="+", default=["math-500", "gsm8k", "olympiad"])
     parser.add_argument("--output-dir", type=str, default="./experiments")
     parser.add_argument("--mode", type=str, required=True,
-                        choices=["baseline", "nowait", "regressor", "tale"],
+                        choices=["baseline", "nowait", "regressor", "tale", "sentence"],
                         help="Evaluation mode")
     parser.add_argument("--target-tokens", type=str, default=None,
-                        help="Path to .npy with target tokens (required for regressor, optional for tale)")
+                        help="Path to .npy with target tokens (required for regressor/sentence, optional for tale)")
     parser.add_argument("--max-model-len", type=int, default=32000)
     args = parser.parse_args()
 
-    if args.mode == "regressor" and args.target_tokens is None:
-        parser.error("--target-tokens is required for regressor mode")
+    if args.mode in ("regressor", "sentence") and args.target_tokens is None:
+        parser.error("--target-tokens is required for regressor/sentence mode")
 
     # --- Load data (always eval_data.parquet) ---
     df = pd.read_parquet(EVAL_DATASET_PATH)
@@ -216,7 +221,7 @@ def main():
         logit_bias = {tid: -100.0 for tid in suppress_ids}
 
     regressor_targets_map = None
-    if args.mode == "regressor":
+    if args.mode in ("regressor", "sentence"):
         data = np.load(args.target_tokens, allow_pickle=True).item()
         regressor_targets_map = dict(zip(data["ids"], data["target"]))
         print(f"Loaded regressor targets for {len(regressor_targets_map)} problems")
@@ -235,7 +240,7 @@ def main():
         regressor_targets = None
         tale_targets = None
 
-        if args.mode == "regressor":
+        if args.mode in ("regressor", "sentence"):
             regressor_targets = []
             for _, row in subset.iterrows():
                 key = row["id"]
