@@ -1,8 +1,10 @@
 import argparse
 import re
 import gc
+import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 from vllm import LLM, SamplingParams
@@ -11,6 +13,7 @@ from transformers import AutoTokenizer
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from data.processing.math_equivalence import is_equiv
+from evaluation.evaluation import evaluate_answer
 
 EVAL_DATASET_PATH = Path(__file__).parent.parent / "data" / "raw" / "eval_data.parquet"
 
@@ -23,11 +26,7 @@ NOWAIT_KEYWORDS = [
 
 
 def build_suppress_ids(tokenizer, keywords: list[str]) -> list[int]:
-    """Scan vocabulary, collect token IDs whose decoded text matches a keyword.
-
-    Uses substring matching as described in the paper: a token is suppressed
-    if any keyword is a substring of the token's decoded text (case-insensitive).
-    """
+    """Scan vocabulary, collect token IDs whose decoded text matches a keyword."""
     suppress = set()
     for token_id in range(tokenizer.vocab_size):
         try:
@@ -44,72 +43,96 @@ def build_suppress_ids(tokenizer, keywords: list[str]) -> list[int]:
     return sorted(suppress)
 
 
-def extract_boxed(s: str) -> str | None:
-    """Extract answer from \\boxed{...}, handling nested braces."""
-    if not s:
-        return None
-    # Find last \boxed{ and match balanced braces
-    idx = s.rfind("\\boxed{")
-    if idx == -1:
-        idx = s.rfind("\\\\boxed{")
-    if idx != -1:
-        start = s.index("{", idx)
-        depth, i = 1, start + 1
-        while i < len(s) and depth > 0:
-            if s[i] == "{":
-                depth += 1
-            elif s[i] == "}":
-                depth -= 1
-            i += 1
-        if depth == 0:
-            return s[start + 1 : i - 1].strip()
-    # Fallback: #### pattern (GSM8K style)
-    matches = re.findall(r"(?m)^[ \t]*####[ \t]*([^\n\r#]+?)[ \t]*$", s)
-    if matches:
-        return matches[-1].strip()
-    # Fallback: last $...$ expression
-    matches = re.findall(r"\$([^$]*)\$", s)
-    if matches:
-        return matches[-1].strip()
-    # Fallback: bare number on its own line
-    matches = re.findall(r"(?m)^[ \t]*([+-]?\d+(?:\.\d+)?)[ \t]*$", s)
-    if matches:
-        return matches[-1].strip()
-    return s
+def extract_think_text(full_text: str) -> str:
+    match = re.search(r"<think>(.*?)</think>", full_text, flags=re.DOTALL)
+    return match.group(1).strip() if match else ""
 
 
-def evaluate_answer(expected: str, generated: str):
-    exp = extract_boxed(expected)
-    gen = extract_boxed(generated)
-    if exp is None or gen is None:
-        return False, exp, gen
-    return is_equiv(gen, exp), exp, gen
+def get_token_budget_prompt(question: str, tokenizer) -> str:
+    """Build a prompt asking the model to estimate its own token budget (TALE)."""
+    prompt = (
+        f"Q: {question}"
+        "Task: Analyze the given question and estimate the minimum number of tokens "
+        "required to generate a complete and accurate response. "
+        "Please Give the response by strictly following this format: [[budget]]. "
+        "for example, Budget: [[12]].\n\n"
+    )
+    messages = [{"role": "user", "content": prompt}]
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+    )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="NoWait evaluation")
-    parser.add_argument("--model-path", type=str, required=True)
-    parser.add_argument("--datasets", type=str, nargs="+", default=["math-500", "gsm8k", "olympiad"])
-    parser.add_argument("--output-dir", type=str, default="./experiments")
-    parser.add_argument("--mode", type=str, default="baseline", choices=["baseline", "nowait"])
-    args = parser.parse_args()
+def build_prompt_content(problem: str, dataset_name: str) -> str:
+    """Build the user-facing problem content (shared across modes)."""
+    if dataset_name == "aime-250":
+        return problem
+    return f"{problem}\nLet's think step by step and output the final answer within boxed{{}}."
 
-    df = pd.read_parquet(EVAL_DATASET_PATH)
-    df = df[df["dataset"].isin(args.datasets)]
-    df["unique_id"] = df["id"].astype(str) + "-" + df["dataset"]
-    print(f"Loaded {len(df)} problems: {df['dataset'].value_counts().to_dict()}")
 
-    llm = LLM(model=args.model_path, dtype="bfloat16", trust_remote_code=True, max_model_len=32000)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+def format_prompt(content: str, tokenizer, enable_thinking=False):
+    """Apply chat template to content."""
+    messages = [{"role": "user", "content": content}]
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True,
+        **({"enable_thinking": True} if enable_thinking else {}),
+    )
 
-    # Build logit_bias dict for nowait mode (V1-compatible)
-    logit_bias = None
-    if args.mode == "nowait":
-        suppress_ids = build_suppress_ids(tokenizer, NOWAIT_KEYWORDS)
-        print(f"Suppressing {len(suppress_ids)} token IDs from {len(NOWAIT_KEYWORDS)} keywords")
-        # -100 is the maximum negative bias allowed by vLLM; effectively suppresses tokens
-        logit_bias = {token_id: -100.0 for token_id in suppress_ids}
 
+def run_tale_budget_estimation(problems, llm, tokenizer, sampling_params, save_dir=None):
+    """Stage 1 of TALE: ask the model to estimate token budgets."""
+    budget_prompts = [get_token_budget_prompt(p, tokenizer) for p in problems]
+
+    outputs = llm.generate(budget_prompts, sampling_params)
+
+    targets = []
+    output_texts = []
+    for output in outputs:
+        if len(output.outputs) > 0:
+            text = output.outputs[0].text
+            output_texts.append(text)
+            match = re.search(r"\[\[(\d+)\]\]", text)
+            targets.append(int(match.group(1)) if match else 100)
+        else:
+            output_texts.append("")
+            targets.append(100)
+
+    if save_dir:
+        save_path = Path(save_dir)
+        save_path.mkdir(parents=True, exist_ok=True)
+        np.save(save_path / "tale_budget_estimates.npy", {
+            "targets": np.array(targets),
+            "outputs": np.array(output_texts),
+        })
+        print(f"Saved TALE budget estimates to {save_path / 'tale_budget_estimates.npy'}")
+
+    return targets
+
+
+def run_dataset(args, subset, dataset_name, llm, tokenizer, logit_bias=None, tale_targets=None, regressor_targets=None):
+    """Run a single dataset through the chosen mode. Returns list of result dicts."""
+    mode = args.mode
+
+    # --- Build prompts ---
+    prompts = []
+    target_tokens_list = []
+    for i, (_, row) in enumerate(subset.iterrows()):
+        content = build_prompt_content(row["problem"], dataset_name)
+
+        if mode == "regressor":
+            target = int(regressor_targets[i])
+            content = f"{content} Think for {target} tokens."
+            target_tokens_list.append(target)
+            prompts.append(format_prompt(content, tokenizer, enable_thinking=True))
+        elif mode == "tale":
+            target = int(tale_targets[i])
+            content = f"{content} Use less than {target} tokens."
+            target_tokens_list.append(target)
+            prompts.append(format_prompt(content, tokenizer, enable_thinking=True))
+        else:
+            prompts.append(format_prompt(content, tokenizer))
+
+    # --- Sampling params ---
     sampling_params = SamplingParams(
         max_tokens=32000,
         temperature=0,
@@ -117,59 +140,135 @@ def main():
         logit_bias=logit_bias,
     )
 
+    # --- Generate ---
+    t0 = time.perf_counter()
+    outputs = llm.generate(prompts, sampling_params)
+    t1 = time.perf_counter()
+
+    # --- Collect results ---
+    results = []
+    correct = 0
+    total_tokens = 0
+    for i, output in enumerate(outputs):
+        text = output.outputs[0].text
+        token_count = len(output.outputs[0].token_ids)
+        total_tokens += token_count
+
+        is_correct, exp_val, gen_val = evaluate_answer(
+            str(subset.iloc[i]["solution"]), text
+        )
+        if is_correct:
+            correct += 1
+
+        results.append({
+            "unique_id": subset.iloc[i]["unique_id"],
+            "prompt": prompts[i],
+            "solution": subset.iloc[i]["solution"],
+            "generated": text,
+            "expected_value": exp_val,
+            "generated_value": gen_val,
+            "token_count": token_count,
+            "is_correct": is_correct,
+            "latency_sec": (t1 - t0) / len(prompts),
+        })
+
+    acc = correct / len(subset)
+    avg_tok = total_tokens / len(subset)
+    print(f"{dataset_name:<15} acc={acc*100:.1f}%  avg_tokens={avg_tok:.0f}  ({correct}/{len(subset)})")
+
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Unified evaluation pipeline")
+    parser.add_argument("--model-path", type=str, required=True)
+    parser.add_argument("--datasets", type=str, nargs="+", default=["math-500", "gsm8k", "olympiad"])
+    parser.add_argument("--output-dir", type=str, default="./experiments")
+    parser.add_argument("--mode", type=str, required=True,
+                        choices=["baseline", "nowait", "regressor", "tale"],
+                        help="Evaluation mode")
+    parser.add_argument("--target-tokens", type=str, default=None,
+                        help="Path to .npy with target tokens (required for regressor, optional for tale)")
+    parser.add_argument("--max-model-len", type=int, default=32000)
+    args = parser.parse_args()
+
+    if args.mode == "regressor" and args.target_tokens is None:
+        parser.error("--target-tokens is required for regressor mode")
+
+    # --- Load data (always eval_data.parquet) ---
+    df = pd.read_parquet(EVAL_DATASET_PATH)
+    df = df[df["dataset"].isin(args.datasets)]
+    df["unique_id"] = df["id"].astype(str) + "-" + df["dataset"]
+    print(f"Loaded {len(df)} problems: {df['dataset'].value_counts().to_dict()}")
+
+    # --- Load model ---
+    llm = LLM(
+        model=args.model_path, dtype="bfloat16", trust_remote_code=True,
+        max_model_len=args.max_model_len,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+
+    # --- Mode-specific setup ---
+    logit_bias = None
+    if args.mode == "nowait":
+        suppress_ids = build_suppress_ids(tokenizer, NOWAIT_KEYWORDS)
+        print(f"Suppressing {len(suppress_ids)} token IDs from {len(NOWAIT_KEYWORDS)} keywords")
+        logit_bias = {tid: -100.0 for tid in suppress_ids}
+
+    regressor_targets_map = None
+    if args.mode == "regressor":
+        data = np.load(args.target_tokens, allow_pickle=True).item()
+        regressor_targets_map = dict(zip(data["ids"], data["target"]))
+        print(f"Loaded regressor targets for {len(regressor_targets_map)} problems")
+
+    # --- Run per dataset ---
     run_name = f"{Path(args.model_path).stem}_{args.mode}"
     output_path = Path(args.output_dir) / run_name
     output_path.mkdir(parents=True, exist_ok=True)
 
     for dataset_name in args.datasets:
-        subset = df[df["dataset"] == dataset_name]
+        subset = df[df["dataset"] == dataset_name].reset_index(drop=True)
         if len(subset) == 0:
             continue
 
-        prompts = []
-        for _, row in subset.iterrows():
-            if dataset_name == "aime-250":
-                content = row["problem"]
+        # Build per-row target tokens for regressor/tale
+        regressor_targets = None
+        tale_targets = None
+
+        if args.mode == "regressor":
+            regressor_targets = []
+            for _, row in subset.iterrows():
+                key = row["id"]
+                if key not in regressor_targets_map:
+                    raise ValueError(f"No regressor target for problem id={key}")
+                regressor_targets.append(regressor_targets_map[key])
+
+        if args.mode == "tale":
+            if args.target_tokens:
+                tale_data = np.load(args.target_tokens, allow_pickle=True).item()
+                tale_targets = list(tale_data["targets"])[:len(subset)]
+                print(f"Loaded {len(tale_targets)} pre-computed TALE targets for {dataset_name}")
             else:
-                content = f"{row['problem']}\nLet's think step by step and output the final answer within boxed{{}}."
+                print(f"TALE stage 1: estimating token budgets for {dataset_name}...")
+                problems = [row["problem"] for _, row in subset.iterrows()]
+                save_dir = output_path
+                tale_sampling = SamplingParams(
+                    max_tokens=20_000, temperature=0, skip_special_tokens=False,
+                )
+                tale_targets = run_tale_budget_estimation(
+                    problems, llm, tokenizer, tale_sampling, save_dir,
+                )
+                print(f"Estimated budgets — min={min(tale_targets)}, max={max(tale_targets)}, mean={np.mean(tale_targets):.0f}")
 
-            # Apply chat template so Qwen3 (and other chat models) get proper formatting
-            messages = [{"role": "user", "content": content}]
-            formatted = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            prompts.append(formatted)
-
-        outputs = llm.generate(prompts, sampling_params)
-
-        results = []
-        correct = 0
-        total_tokens = 0
-        for i, output in enumerate(outputs):
-            text = output.outputs[0].text
-            token_count = len(output.outputs[0].token_ids)
-            total_tokens += token_count
-            is_correct, exp_val, gen_val = evaluate_answer(str(subset.iloc[i]["solution"]), text)
-            if is_correct:
-                correct += 1
-            results.append({
-                "unique_id": subset.iloc[i]["unique_id"],
-                "prompt": prompts[i],
-                "solution": subset.iloc[i]["solution"],
-                "generated": text,
-                "expected_value": exp_val,
-                "generated_value": gen_val,
-                "token_count": token_count,
-                "is_correct": is_correct,
-            })
-
-        acc = correct / len(subset)
-        avg_tok = total_tokens / len(subset)
-        print(f"{dataset_name:<15} acc={acc*100:.1f}%  avg_tokens={avg_tok:.0f}  ({correct}/{len(subset)})")
-
+        results = run_dataset(
+            args, subset, dataset_name, llm, tokenizer,
+            logit_bias=logit_bias,
+            tale_targets=tale_targets,
+            regressor_targets=regressor_targets,
+        )
         pd.DataFrame(results).to_parquet(output_path / f"{dataset_name}_results.parquet")
+
+    print(f"\nResults saved to {output_path}")
 
     del llm
     gc.collect()
