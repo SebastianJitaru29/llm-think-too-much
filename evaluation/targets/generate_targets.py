@@ -26,10 +26,10 @@ import jax.numpy as jnp
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from regressor.architecture import Regressor
 
-EVAL_DATASET_PATH = Path(__file__).parent.parent / "data" / "raw" / "eval_data.parquet"
+EVAL_DATASET_PATH = Path(__file__).parent.parent.parent / "data" / "raw" / "eval_data.parquet"
 
 
 @partial(jax.jit, static_argnames=["predict_too_hard"])
