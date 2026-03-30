@@ -5,6 +5,8 @@ import jax.numpy as jnp
 from pathlib import Path
 from architecture import Regressor
 
+MODEL_NAME = "regressor_L1.pkl"
+MODEL_DIR = Path(__file__).parent.parent / "data" / "models" / "regressors" 
 @jax.jit
 def predict_batch(network: Regressor, hidden: jax.Array) -> tuple[jax.Array, jax.Array]:
     logits = Regressor.forward(hidden, network)
@@ -25,7 +27,7 @@ def main():
     h_path = data_path / "hidden_states_test.npy"
     h = jnp.squeeze(jnp.load(h_path))
     
-    network = Regressor.load_network()
+    network = Regressor.load_network(name = MODEL_NAME, dir=MODEL_DIR)
     
     df_aime = pd.read_parquet(
         data_path / "test_aime.parquet", 

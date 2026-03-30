@@ -6,13 +6,18 @@ from pathlib import Path
 from architecture import Regressor
 from functools import partial
 
-path_test_targets_hidden = Path(__file__).parent.parent / "data" / "processed" / "dataset_splitting"/ "test_targets_hidden_bert.parquet" #"eval_L1_bert" / "gsm8k_olympiad_amc_hidden_L1.parquet"
+path_test_targets_hidden = Path(__file__).parent.parent / "data" / "processed" / "eval_L1_bert" / "gsm8k_olympiad_amc_hidden_L1.parquet" #"dataset_splitting"/ "test_targets_hidden.parquet" #"eval_L1_bert" / "gsm8k_olympiad_amc_hidden_L1.parquet"
+MODEL_NAME = "regressor_L1.pkl"
+MODEL_DIR = Path(__file__).parent.parent / "data" / "models" / "regressors" 
+
+RESULT_FILE_NAME = "rgs_eval_results_L1_b20_p08.npy"
+RESULTS_DIR =Path(__file__).parent.parent / "data" / "processed" / "regressor_target_tokens" 
 
 @partial(jax.jit, static_argnames=['predict_too_hard'])
 def predict_batch(network: Regressor, hidden: jax.Array, predict_too_hard: bool = False) -> tuple[jax.Array, jax.Array]:
     logits = Regressor.forward(hidden, network)
     p = jax.nn.sigmoid(logits)
-    bins_correct = p > 0.6
+    bins_correct = p > 0.8
     
     any_correct = jnp.any(bins_correct, axis=1)
     highest_incorrect = jnp.argmax(p, axis=1)
@@ -27,17 +32,12 @@ def predict_batch(network: Regressor, hidden: jax.Array, predict_too_hard: bool 
     return bucket_i, p
 
 def main():
-    #data_path = Path(__file__).parent.parent / "dataset_splitting"
-    
-    #h_path = "/scratch/s3799042/results_nlp/test_hidden_states.npy" #data_path / "hidden_states_test.npy"
-    #h = jnp.load(h_path, allow_pickle= True).item()
-    
-    network = Regressor.load_network(name="regressor_bert.pkl")#"regressor_bert.pkl")#
+
+    network = Regressor.load_network(name=MODEL_NAME, dir= MODEL_DIR)#"regressor_bert.pkl")#
     
     df = pd.read_parquet(path_test_targets_hidden)
     df = df.rename(columns={'id': 'question_id'})
     bins = np.linspace(100, 5000, num=20, dtype=int)
-    #np.sort(df["target_think_tokens"].unique())
 
     df_unique = df.drop_duplicates(subset = 'question_id', keep = 'first')
 
@@ -65,7 +65,7 @@ def main():
     
     #np.save(Path(__file__).parent / "test_target_tokens.npy", target_tokens)
     np.save(
-        Path(__file__).parent / "results_bert_test.npy",
+        RESULTS_DIR / RESULT_FILE_NAME,
         {
             "ids": df_unique['question_id'],
             "target": target_tokens,

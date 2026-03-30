@@ -10,9 +10,11 @@ from functools import partial
 
 from architecture import Regressor
 
-path_train_targets_hidden = Path(__file__).parent.parent / "data" / "processed" / "dataset_splitting" / "train_targets_hidden_bert.parquet"
+path_train_targets_hidden = Path(__file__).parent.parent / "data" / "processed" / "dataset_splitting" / "train_targets_hidden.parquet"
 
-USE_L1_HIDDEN_STATES = False
+USE_L1_HIDDEN_STATES = True
+SAVE_DIR = Path(__file__).parent.parent / "data" / "models" / "regressors"
+MODEL_NAME = "regressor_L1"
 
 def create_regressor_dataset(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
     
@@ -226,13 +228,12 @@ def calc_baseline_stats(y: np.ndarray) -> tuple[float, float]:
 
 if __name__ == "__main__":
     from matplotlib import pyplot as plt
-    # import matplotlib
-    # matplotlib.use("Qt5Agg")
+
 
     x, y, bins = get_dataset()
     network, tl, vl, va, vtnr = train(x, y, bins=bins, epochs=140, batch_size=512, dropout=0.20)
 
-    Regressor.save_network(network, name = "regressor_bert.pkl")
+    Regressor.save_network(network, name = MODEL_NAME + ".pkl", dir = SAVE_DIR)
 
     basline_acc, baseline_tnr = calc_baseline_stats(y)
 
@@ -247,5 +248,5 @@ if __name__ == "__main__":
 
     ax.set_xlabel("Epochs", fontsize=12)
 
-    fig.savefig("./perf2.png")
+    fig.savefig(Path(__file__).parent.parent / "visualization" / f"loss_{MODEL_NAME}.png")#"./perf2.png")
 
