@@ -70,12 +70,11 @@ def build_prompt_content(problem: str, dataset_name: str) -> str:
     return f"{problem}\nLet's think step by step and output the final answer within boxed{{}}."
 
 
-def format_prompt(content: str, tokenizer, enable_thinking=False):
+def format_prompt(content: str, tokenizer):
     """Apply chat template to content."""
     messages = [{"role": "user", "content": content}]
     return tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True,
-        **({"enable_thinking": True} if enable_thinking else {}),
     )
 
 
@@ -123,17 +122,17 @@ def run_dataset(args, subset, dataset_name, llm, tokenizer, logit_bias=None, tal
             target = int(regressor_targets[i])
             content = f"{content} Think for {target} tokens."
             target_tokens_list.append(target)
-            prompts.append(format_prompt(content, tokenizer, enable_thinking=True))
+            prompts.append(format_prompt(content, tokenizer))
         elif mode == "sentence":
             target = int(regressor_targets[i])
             content = f"{content} Use less than {target // 60} sentences."
             target_tokens_list.append(target)
-            prompts.append(format_prompt(content, tokenizer, enable_thinking=True))
+            prompts.append(format_prompt(content, tokenizer))
         elif mode == "tale":
             target = int(tale_targets[i])
             content = f"{content} Use less than {target} tokens."
             target_tokens_list.append(target)
-            prompts.append(format_prompt(content, tokenizer, enable_thinking=True))
+            prompts.append(format_prompt(content, tokenizer))
         else:
             prompts.append(format_prompt(content, tokenizer))
 
