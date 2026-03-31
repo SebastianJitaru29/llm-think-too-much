@@ -14,6 +14,7 @@ dependencies = [
     "openai>=2.29.0",
     "pandas>=3.0.1",
     "peft>=0.18.1",
+    "polars>=1.39.3",
     "pydrive2>=1.21.3",
     "python-dotenv>=1.2.2",
     "seaborn>=0.13.2",
