@@ -35,6 +35,8 @@ def main():
     parser.add_argument("--method", type=str, default="token",
                         choices=["token", "sentence"],
                         help="Prompt method: 'token' = Think for N tokens, 'sentence' = Use less than N sentences")
+    parser.add_argument("--batch-size", type=int, default=100,
+                        help="Number of prompts per batch (intermediate save after each batch)")
     args = parser.parse_args()
 
     print(f"Loading data from {args.data}...")
@@ -74,6 +76,8 @@ def main():
 
     sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
 
+    expanded_df = expanded_df.reset_index(drop=True)
+
     prompts = [
         format_prompt(
             build_prompt_content(row["problem"], row["dataset"], row["target_think_tokens"], args.method),
@@ -82,38 +86,65 @@ def main():
         for _, row in expanded_df.iterrows()
     ]
 
-    print(f"Starting generation for {len(prompts)} prompts...")
-    t0 = time.perf_counter()
-    outputs = llm.generate(prompts, sampling_params)
-    t1 = time.perf_counter()
-    
+    out_path = os.path.join(args.generated_dir, "generated_train_data.parquet")
+    partial_path = os.path.join(args.generated_dir, "generated_train_data_partial.parquet")
+
+    # Resume from partial results if they exist
     records = []
-    for i, output in enumerate(outputs):
-        row = expanded_df.iloc[i]
-        text = output.outputs[0].text
-        token_count = len(output.outputs[0].token_ids)
+    start_idx = 0
+    if os.path.exists(partial_path):
+        partial_df = pd.read_parquet(partial_path)
+        records = partial_df.to_dict("records")
+        start_idx = len(records)
+        print(f"Resuming from {partial_path} — {start_idx}/{len(prompts)} already done")
 
-        is_ok, exp_val, gen_val = evaluate_answer(row["solution"], text)
+    total = len(prompts)
+    batch_size = args.batch_size
 
-        records.append({
-            "unique_id": row["unique_id"],
-            "prompt": prompts[i],
-            "solution": row["solution"],
-            "generated": text,
-            "expected_value": exp_val,
-            "generated_value": gen_val,
-            "token_count": token_count,
-            "is_correct": bool(is_ok),
-            "latency_sec": (t1 - t0) / len(prompts),
-        })
+    for batch_start in range(start_idx, total, batch_size):
+        batch_end = min(batch_start + batch_size, total)
+        batch_prompts = prompts[batch_start:batch_end]
+
+        print(f"Generating batch {batch_start}–{batch_end} / {total} ...")
+        t0 = time.perf_counter()
+        outputs = llm.generate(batch_prompts, sampling_params)
+        t1 = time.perf_counter()
+        batch_latency = (t1 - t0) / len(batch_prompts)
+
+        for j, output in enumerate(outputs):
+            row = expanded_df.iloc[batch_start + j]
+            text = output.outputs[0].text
+            token_count = len(output.outputs[0].token_ids)
+            is_ok, exp_val, gen_val = evaluate_answer(row["solution"], text)
+
+            records.append({
+                "unique_id": row["unique_id"],
+                "prompt": batch_prompts[j],
+                "solution": row["solution"],
+                "generated": text,
+                "expected_value": exp_val,
+                "generated_value": gen_val,
+                "token_count": token_count,
+                "is_correct": bool(is_ok),
+                "latency_sec": batch_latency,
+            })
+
+        # Save intermediate results
+        partial_df = pd.DataFrame(records)
+        partial_df.to_parquet(partial_path, index=False)
+        print(f"  Saved {len(records)}/{total} records to {partial_path}")
 
     print("Restoring original dataset order...")
     final_df = pd.DataFrame(records)
     final_df = final_df.sort_values(by="unique_id", ascending=True)
 
-    out_path = os.path.join(args.generated_dir, f"generated_train_data.parquet")
     final_df.to_parquet(out_path, index=False)
     print(f"Saved {len(final_df)} records to {out_path}")
+
+    # Clean up partial file
+    if os.path.exists(partial_path):
+        os.remove(partial_path)
+        print(f"Removed partial file: {partial_path}")
 
 if __name__ == "__main__":
     main()
