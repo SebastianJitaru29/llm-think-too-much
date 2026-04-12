@@ -1,54 +1,40 @@
 import argparse, re, time, os
 import numpy as np
-import pandas as pd 
+import pandas as pd
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
-from data.processing.math_equivalence import is_equiv
+from evaluation.evaluation import evaluate_answer
+import math
 
-def build_prompt(problem: str, target_think_tokens: int) -> str:
-    return f"{problem} Let’s think step by step inside and output the final answer within boxed{{}}. Think for {target_think_tokens} tokens. <think>"
+def build_prompt_content(problem: str, dataset_name: str, target_think_tokens: int, method: str = "token") -> str:
+    """Build the user-facing problem content with target token/sentence instruction."""
+    if dataset_name == "aime-250":
+        content = problem
+    else:
+        content = f"{problem}\nLet’s think step by step and output the final answer within boxed{{}}."
+    if method == "sentence":
+        content = f"{content} Use less than {math.ceil(target_think_tokens // 80)} sentences."
+    else:
+        content = f"{content} Think for {target_think_tokens} tokens."
+    return content
 
-def extract_boxed(s: str) -> str | None:
-    if not s:
-        return None
-    # MATH & AIME
-    m = re.search(r"\\boxed\{([^}]*)\}", s)
-    if m:
-        return m.group(1).strip()
-    # GSM8K
-    matches = re.findall(
-        r"(?m)^[ \t]*####[ \t]*([^\n\r#]+?)[ \t]*$",
-        s
+
+def format_prompt(content: str, tokenizer):
+    """Apply chat template to content."""
+    messages = [{"role": "user", "content": content}]
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True,
     )
-    if matches:
-        return matches[-1].strip()
-    # Olympiad
-    m = re.search(r"\$([^$]*)\$", s)
-    if m:
-        return m.group(1).strip()
-    # AMC 
-    m = re.search(r"(?m)^[ \t]*([+-]?\d+(?:\.\d+)?)[ \t]*$", s)
-    if m:
-        return m.group(1)
-    return None
 
-def extract_think_text(full_text: str) -> str:
-    match = re.search(r"<think>(.*?)</think>", full_text, flags=re.DOTALL)
-    return match.group(1).strip() if match else ""
-
-def evaluate_answer(expected_answer: str, generated_answer: str) -> bool:
-    exp_val = extract_boxed(expected_answer)
-    gen_val = extract_boxed(generated_answer)
-    if exp_val is None or gen_val is None:
-        return False, exp_val, gen_val
-    return is_equiv(gen_val, exp_val), exp_val, gen_val
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--generated-dir", required=True)
-    parser.add_argument("--file-name", required=True)
+    parser.add_argument("--method", type=str, default="token",
+                        choices=["token", "sentence"],
+                        help="Prompt method: 'token' = Think for N tokens, 'sentence' = Use less than N sentences")
     args = parser.parse_args()
 
     print(f"Loading data from {args.data}...")
@@ -61,6 +47,7 @@ def main():
         for tgt in targets:
             expanded.append({
                 "id": row["id"],
+                "unique_id": str(row["id"]) + "-" + str(row["dataset"]),
                 "dataset": str(row["dataset"]),
                 "level": str(row["level"]),
                 "problem": str(row["problem"]),
@@ -88,7 +75,10 @@ def main():
     sampling_params = SamplingParams(max_tokens=6000, temperature=0, skip_special_tokens=False)
 
     prompts = [
-        build_prompt(row["problem"], row["target_think_tokens"]) 
+        format_prompt(
+            build_prompt_content(row["problem"], row["dataset"], row["target_think_tokens"], args.method),
+            tokenizer,
+        )
         for _, row in expanded_df.iterrows()
     ]
 
@@ -97,47 +87,31 @@ def main():
     outputs = llm.generate(prompts, sampling_params)
     t1 = time.perf_counter()
     
-    generated_texts = []
-    think_texts = []
-    
-    for i, output in enumerate(outputs):
-        prompt_text = prompts[i]
-        generated_suffix = output.outputs[0].text
-        full_text = prompt_text + generated_suffix
-        
-        generated_texts.append(full_text)
-        think_texts.append(extract_think_text(full_text))
-
-    think_encodings = tokenizer(think_texts, add_special_tokens=False)["input_ids"]
-    think_lengths = [len(ids) for ids in think_encodings]
-
     records = []
-    for i in range(len(expanded_df)):
+    for i, output in enumerate(outputs):
         row = expanded_df.iloc[i]
-        full_text = generated_texts[i]
-        is_ok, exp_val, gen_val = evaluate_answer(row["solution"], full_text)
+        text = output.outputs[0].text
+        token_count = len(output.outputs[0].token_ids)
+
+        is_ok, exp_val, gen_val = evaluate_answer(row["solution"], text)
 
         records.append({
-            "id": row["id"],
-            "dataset": row["dataset"],
-            "level": row["level"],
+            "unique_id": row["unique_id"],
             "prompt": prompts[i],
-            "solution_col": row["solution"],
-            "extracted_solution": exp_val,
-            "extracted_generated_solution": gen_val,
+            "solution": row["solution"],
+            "generated": text,
+            "expected_value": exp_val,
+            "generated_value": gen_val,
+            "token_count": token_count,
             "is_correct": bool(is_ok),
-            "generated_think_text": think_texts[i],
-            "generated_text": full_text,
-            "target_think_tokens": row["target_think_tokens"],
-            "generated_think_tokens": think_lengths[i],
-            "latency_sec": (t1 - t0) / len(prompts)
+            "latency_sec": (t1 - t0) / len(prompts),
         })
 
     print("Restoring original dataset order...")
     final_df = pd.DataFrame(records)
-    final_df = final_df.sort_values(by="id", ascending=True)
+    final_df = final_df.sort_values(by="unique_id", ascending=True)
 
-    out_path = os.path.join(args.generated_dir, f"{args.file_name}.parquet")
+    out_path = os.path.join(args.generated_dir, f"generated_train_data.parquet")
     final_df.to_parquet(out_path, index=False)
     print(f"Saved {len(final_df)} records to {out_path}")
 
